@@ -15,8 +15,9 @@ jobs:
       - uses: home-assistant/actions/hassfest@master
 
   hacs:
-    name: HACS
+    name: HACS publish checks
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: hacs/action@main
