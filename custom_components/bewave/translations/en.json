@@ -1,0 +1,33 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "BE WAVE (Satel)",
+        "description": "Connect to your Smart HUB on the local network.",
+        "data": {
+          "host": "HUB IP address (e.g. 192.168.10.129)",
+          "login": "Local username",
+          "password": "Local password",
+          "mode": "Protection mode key (default: defau)",
+          "serial": "HUB serial (optional, auto-discovered if blank)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect / sign in. Check IP, username and password, and that Home Assistant is on the same network as the HUB."
+    },
+    "abort": {
+      "already_configured": "This BE WAVE HUB is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "BE WAVE options",
+        "data": {
+          "mode": "Protection mode key to arm/disarm"
+        }
+      }
+    }
+  }
+}
