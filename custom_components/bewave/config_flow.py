@@ -1,10 +1,15 @@
-"""Config + options flow for BE WAVE."""
+"""Config + options flow for BE WAVE (with DHCP auto-discovery)."""
 from __future__ import annotations
 import secrets
 import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant, callback
+
+try:  # HA 2024.x location
+    from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
+except ImportError:  # older fallback
+    from homeassistant.components.dhcp import DhcpServiceInfo  # type: ignore
 
 from .const import (DOMAIN, CONF_LOGIN, CONF_PASSWORD, CONF_HOST, CONF_SERIAL,
                     CONF_DEVICE_UUID, CONF_MODE, DEFAULT_MODE)
@@ -30,6 +35,18 @@ async def _validate(hass: HomeAssistant, data: dict) -> str:
 class BeWaveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
+    def __init__(self):
+        self._host: str | None = None
+
+    async def async_step_dhcp(self, discovery_info: DhcpServiceInfo):
+        """Triggered when a Satel (00:1B:9C) device appears on the network."""
+        self._host = discovery_info.ip
+        mac = discovery_info.macaddress.replace(":", "").upper()
+        await self.async_set_unique_id(f"bewave_mac_{mac}")
+        self._abort_if_unique_id_configured(updates={CONF_HOST: self._host})
+        self.context["title_placeholders"] = {"name": f"BE WAVE HUB ({self._host})"}
+        return await self.async_step_user()
+
     async def async_step_user(self, user_input=None):
         errors = {}
         if user_input is not None:
@@ -40,13 +57,14 @@ class BeWaveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "cannot_connect"
             else:
                 user_input[CONF_SERIAL] = serial or user_input.get(CONF_SERIAL)
-                await self.async_set_unique_id(f"bewave_{serial}")
+                # prefer the real serial as unique id when known
+                await self.async_set_unique_id(f"bewave_{serial}", raise_on_progress=False)
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
                     title=f"BE WAVE {serial or ''}".strip(), data=user_input)
 
         schema = vol.Schema({
-            vol.Required(CONF_HOST): str,
+            vol.Required(CONF_HOST, default=self._host or vol.UNDEFINED): str,
             vol.Required(CONF_LOGIN): str,
             vol.Required(CONF_PASSWORD): str,
             vol.Optional(CONF_MODE, default=DEFAULT_MODE): str,
