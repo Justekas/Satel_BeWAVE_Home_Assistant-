@@ -1,0 +1,12 @@
+{
+  "domain": "bewave",
+  "name": "BE WAVE (Satel)",
+  "version": "0.1.0",
+  "documentation": "https://github.com/slaveitgr/Satel_BeWAVE_Home_Assistant-",
+  "issue_tracker": "https://github.com/slaveitgr/Satel_BeWAVE_Home_Assistant-/issues",
+  "requirements": ["cryptography>=42.0.0"],
+  "codeowners": ["@slaveitgr"],
+  "iot_class": "local_push",
+  "config_flow": true,
+  "integration_type": "device"
+}
