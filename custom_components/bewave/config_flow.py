@@ -1,7 +1,10 @@
 """Config + options flow for BE WAVE (with DHCP auto-discovery)."""
 from __future__ import annotations
+import logging
 import secrets
 import voluptuous as vol
+
+_LOGGER = logging.getLogger(__name__)
 
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant, callback
@@ -53,7 +56,9 @@ class BeWaveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             user_input[CONF_DEVICE_UUID] = secrets.token_hex(16).upper()
             try:
                 serial = await _validate(self.hass, user_input)
-            except Exception:  # noqa: BLE001
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.error("BE WAVE sign-in failed for %s: %s",
+                              user_input.get(CONF_HOST), err)
                 errors["base"] = "cannot_connect"
             else:
                 user_input[CONF_SERIAL] = serial or user_input.get(CONF_SERIAL)
