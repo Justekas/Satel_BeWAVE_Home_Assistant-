@@ -4,9 +4,18 @@
   "version": "0.1.0",
   "documentation": "https://github.com/slaveitgr/Satel_BeWAVE_Home_Assistant-",
   "issue_tracker": "https://github.com/slaveitgr/Satel_BeWAVE_Home_Assistant-/issues",
-  "requirements": ["cryptography>=42.0.0"],
-  "codeowners": ["@slaveitgr"],
+  "requirements": [
+    "cryptography>=3.0"
+  ],
+  "codeowners": [
+    "@slaveitgr"
+  ],
   "iot_class": "local_push",
   "config_flow": true,
-  "integration_type": "device"
+  "integration_type": "device",
+  "dhcp": [
+    {
+      "macaddress": "001B9C*"
+    }
+  ]
 }
