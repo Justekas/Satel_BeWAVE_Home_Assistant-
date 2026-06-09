@@ -22,7 +22,7 @@ identity is generated automatically.
 
 ## Install via HACS (custom repository)
 1. HACS → **⋮** → **Custom repositories**.
-2. Add `https://github.com/YOUR_GH_USERNAME/bewave-ha` as category **Integration**.
+2. Add `https://github.com/slaveitgr/Satel_BeWAVE_Home_Assistant-` as category **Integration**.
 3. Install **BE WAVE (Satel)**, then **restart Home Assistant**.
 4. Settings → Devices & Services → **Add Integration** → **BE WAVE**.
 5. Enter the HUB IP, your **local username** and **password** (HA must be on the same LAN).
