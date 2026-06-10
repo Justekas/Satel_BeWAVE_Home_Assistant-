@@ -33,6 +33,8 @@ class BeWaveHub:
     def _ensure(self):
         if self.conn is None:
             self.conn = proto.LocalConnection(self.host, self.client)
+            # connect_and_signin() also subscribes to the device channels, so the
+            # hub immediately pushes the current device state (f89).
             self.conn.connect_and_signin()
             _LOGGER.info("BE WAVE: signed in to %s (serial=%s)", self.host, self.client.serial)
 
@@ -40,6 +42,10 @@ class BeWaveHub:
         with self._lock:
             try:
                 self._ensure()
+                # Drain whatever the hub has pushed since the last poll. The hub
+                # pushes an f89 device-state message on connect and on every change
+                # (including arm/disarm done from the phone), so this reflects the
+                # real, current state — not just our own last command.
                 msgs = self.conn.read_messages(1)
                 self._update_state_from(msgs)
                 return {"state": self.state, "serial": self.client.serial}
@@ -52,22 +58,25 @@ class BeWaveHub:
                 raise UpdateFailed(f"BE WAVE poll failed: {err}") from err
 
     def _update_state_from(self, msgs):
-        # Best-effort: status field mapping for armed/alarm is not fully decoded yet,
-        # so panel state is driven optimistically by commands (see arm/disarm).
-        # Hook left here to refine once the protection-mode status field is mapped.
-        return
+        # field 20 inside the pushed f89 message: 1/2 = armed, 0 = disarmed.
+        for _fd, pt in msgs:
+            if not pt:
+                continue
+            st = proto.armed_state(pt)
+            if st is not None:
+                self.state = "armed_away" if st else "disarmed"
 
     def arm(self):
         with self._lock:
             self._ensure()
             self.conn.arm(self.mode)
-            self.state = "armed_away"
+            self.state = "armed_away"          # optimistic; the push confirms it
 
     def disarm(self):
         with self._lock:
             self._ensure()
             self.conn.disarm(self.mode)
-            self.state = "disarmed"
+            self.state = "disarmed"            # optimistic; the push confirms it
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
