@@ -5,7 +5,7 @@ from homeassistant.components.sensor import (
     SensorEntity, SensorDeviceClass, SensorStateClass)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTemperature, PERCENTAGE
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -21,13 +21,21 @@ _KINDS = {
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     data = hass.data[DOMAIN][entry.entry_id]
     hub, coordinator = data["hub"], data["coordinator"]
-    ents = []
-    for d in hub.devices():
-        if d.get("temp") is not None:
-            ents.append(BeWaveSensor(coordinator, hub, entry, d["id"], "temp"))
-        if d.get("battery") is not None:
-            ents.append(BeWaveSensor(coordinator, hub, entry, d["id"], "battery"))
-    async_add_entities(ents)
+    known: set[tuple[int, str]] = set()
+
+    @callback
+    def _sync():
+        new = []
+        for d in hub.devices():
+            for kind in ("temp", "battery"):
+                if d.get(kind) is not None and (d["id"], kind) not in known:
+                    known.add((d["id"], kind))
+                    new.append(BeWaveSensor(coordinator, hub, entry, d["id"], kind))
+        if new:
+            async_add_entities(new)
+
+    _sync()
+    entry.async_on_unload(coordinator.async_add_listener(_sync))
 
 
 class BeWaveSensor(CoordinatorEntity, SensorEntity):
