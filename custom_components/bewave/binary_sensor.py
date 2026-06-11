@@ -4,7 +4,7 @@ from __future__ import annotations
 from homeassistant.components.binary_sensor import (
     BinarySensorEntity, BinarySensorDeviceClass)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -17,9 +17,20 @@ _CLASS = {"contact": BinarySensorDeviceClass.OPENING,
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     data = hass.data[DOMAIN][entry.entry_id]
     hub, coordinator = data["hub"], data["coordinator"]
-    ents = [BeWaveBinary(coordinator, hub, entry, d["id"], _CLASS[d["cat"]])
-            for d in hub.devices() if d["cat"] in _CLASS]
-    async_add_entities(ents)
+    known: set[int] = set()
+
+    @callback
+    def _sync():
+        new = []
+        for d in hub.devices():
+            if d["cat"] in _CLASS and d["id"] not in known:
+                known.add(d["id"])
+                new.append(BeWaveBinary(coordinator, hub, entry, d["id"], _CLASS[d["cat"]]))
+        if new:
+            async_add_entities(new)
+
+    _sync()
+    entry.async_on_unload(coordinator.async_add_listener(_sync))
 
 
 class BeWaveBinary(CoordinatorEntity, BinarySensorEntity):
