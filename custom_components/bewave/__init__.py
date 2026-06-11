@@ -28,6 +28,7 @@ class BeWaveHub:
             self.client.serial = serial
         self.conn: proto.LocalConnection | None = None
         self._registered = False
+        self._empty = 0                        # consecutive polls with no data
         self.state: str | None = None          # armed_away | disarmed | None
         self.flags = {"led": None, "grade2": None, "satel": None}
         self.info = {"power": None, "stor_free": None, "stor_total": None,
@@ -49,18 +50,40 @@ class BeWaveHub:
             self.conn.connect_and_signin()
         _LOGGER.info("BE WAVE: signed in to %s (serial=%s)", self.host, self.client.serial)
 
+    def _reconnect(self):
+        """Drop a dead/stale session and sign in again (caller holds the lock)."""
+        try:
+            if self.conn:
+                self.conn.close()
+        except Exception:
+            pass
+        self.conn = None
+        self._empty = 0
+        self._ensure()
+
     def poll(self):
         with self._lock:
             try:
                 self._ensure()
                 self.conn.refresh()            # light re-subscribe (f88 + f26)
-                self._update_from(self.conn.read_messages(1))
+                msgs = self.conn.read_messages(1.5)
+                if msgs:
+                    self._empty = 0
+                    self._update_from(msgs)
+                else:
+                    # A healthy session answers a refresh with telemetry; several
+                    # silent polls in a row mean the hub dropped us -> reconnect.
+                    self._empty += 1
+                    if self._empty >= 3:
+                        _LOGGER.info("BE WAVE: stale session, reconnecting")
+                        self._reconnect()
                 return {"state": self.state}
             except Exception as err:
                 try:
                     if self.conn: self.conn.close()
                 finally:
                     self.conn = None
+                self._empty = 0
                 raise UpdateFailed(f"BE WAVE poll failed: {err}") from err
 
     def _update_from(self, msgs):
@@ -106,21 +129,50 @@ class BeWaveHub:
                         "volt": st.get("volt")})
         return out
 
+    def _command(self, send, verify=None):
+        """Run a command on a live session, verifying + retrying on a fresh
+        connection if the socket was stale (commands are lost on a dead socket).
+        Caller holds the lock."""
+        last = None
+        for attempt in (1, 2):
+            try:
+                self._ensure()
+                send()
+                # A live session answers with telemetry; no reply == dropped
+                # socket (half-open), so require real data before trusting it.
+                msgs = self.conn.read_messages(2)
+                self._update_from(msgs)
+                if msgs and (verify is None or verify()):
+                    self._empty = 0
+                    return True
+            except Exception as err:
+                last = err
+            # stale, silent or unverified -> reconnect and try once more
+            self._reconnect()
+        if last:
+            _LOGGER.warning("BE WAVE: command failed: %s", last)
+        return False
+
     def arm(self):
         with self._lock:
-            self._ensure(); self.conn.arm(self.mode); self.state = "armed_away"
+            self.state = "armed_away"
+            self._command(lambda: self.conn.arm(self.mode),
+                          verify=lambda: self.state == "armed_away")
     def disarm(self):
         with self._lock:
-            self._ensure(); self.conn.disarm(self.mode); self.state = "disarmed"
+            self.state = "disarmed"
+            self._command(lambda: self.conn.disarm(self.mode),
+                          verify=lambda: self.state == "disarmed")
     def set_toggle(self, name, desired):
         if name not in proto.SETTING_IDS:
             return
         with self._lock:
-            self._ensure()
-            cur = self.flags.get(name)
-            if cur is None or cur != desired:
-                self.conn.toggle_setting(proto.SETTING_IDS[name])
-            self.flags[name] = desired
+            def _send():
+                cur = self.flags.get(name)
+                if cur is None or cur != desired:
+                    self.conn.toggle_setting(proto.SETTING_IDS[name])
+                self.flags[name] = desired
+            self._command(_send, verify=lambda: self.flags.get(name) == desired)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
