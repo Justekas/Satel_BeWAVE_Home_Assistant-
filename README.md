@@ -16,12 +16,17 @@ Custom integration για το **Home Assistant** που επιτρέπει το
 - 🔐 Login με local username + password
 - 🛡️ `alarm_control_panel` entity στο Home Assistant
 - ✅ Arm away / Disarm
-- ⚙️ Ρυθμιζόμενο protection-mode key για custom modes
+- 🔴 **Live state read-back** — το panel δείχνει την πραγματική κατάσταση **ακόμα κι όταν αλλάζει από το κινητό**, τοπικά
+- 🚪 **Sensors**: ανιχνευτές πόρτας/παραθύρου (opening) & κίνησης (motion) ως `binary_sensor`
+- 🌡️ **Θερμοκρασία & μπαταρία** ανά συσκευή ως `sensor` (+ τάση, σήμα, system number ως attributes)
+- 🎛️ **Hub setting switches**: LED indicator, GRADE 2, SATEL server connection
+- 🔑 **Αυτο-εγγραφή** (firmware 1.04+): δημιουργεί δικό του device id και εγγράφεται μόνο του — δεν χρειάζεται «add device» χειροκίνητα
+- ⚙️ Configurable protection-mode key
 - 🔒 AES-256-GCM crypto, fully local/on-device
 
-> **Κατάσταση: v0.1.** Το sign-in, το arm/disarm και το crypto έχουν δοκιμαστεί σε πραγματική μονάδα.
-> Το live **state read-back** προς το Home Assistant είναι best-effort σε αυτή την έκδοση.
-> Προς το παρόν το panel ενημερώνεται αισιόδοξα από την τελευταία εντολή. Δες το Roadmap.
+> **Κατάσταση: v0.4.** Sign-in, arm/disarm, live state, switches, **sensors (πόρτα/κίνηση/θερμοκρασία/μπαταρία) και αυτο-εγγραφή** δοκιμασμένα σε πραγματική μονάδα (fw 1.04).
+> Το read-back είναι 100% τοπικό (δουλεύει ακόμα και χωρίς internet): μετά το sign-in ο HUB
+> κάνει push την κατάσταση των συσκευών και σε κάθε αλλαγή.
 
 ### Εγκατάσταση μέσω HACS custom repository
 
@@ -67,12 +72,13 @@ config/custom_components/bewave/
 pip install cryptography
 ```
 
-Μετά μπορείς να δοκιμάσεις:
+Μετά μπορείς να δοκιμάσεις (βάλε τα δικά σου στοιχεία στη θέση των `USER` / `PASS`):
 
 ```bash
 python3 custom_components/bewave/bewave_client.py discover
-python3 custom_components/bewave/bewave_client.py arm    --host 192.168.10.129 --login USER --password 'PASS'
-python3 custom_components/bewave/bewave_client.py disarm --host 192.168.10.129 --login USER --password 'PASS'
+python3 custom_components/bewave/bewave_client.py status --host 192.168.1.50 --login USER --password 'PASS'
+python3 custom_components/bewave/bewave_client.py arm    --host 192.168.1.50 --login USER --password 'PASS'
+python3 custom_components/bewave/bewave_client.py disarm --host 192.168.1.50 --login USER --password 'PASS'
 ```
 
 ### Πώς δουλεύει το protocol
@@ -104,13 +110,17 @@ ARM/DISARM payload:
 protobuf f94{f1{f1{f1=mode, f2=1|0}}}
 ```
 
+**State read-back (τοπικά):** μετά το sign-in, ο client κάνει subscribe στα κανάλια συσκευών.
+Ο HUB τότε στέλνει ένα μήνυμα `f89` (device state) μία φορά αμέσως και ξανά σε κάθε αλλαγή
+— ακόμα κι όταν οπλίζεις/αφοπλίζεις από το κινητό. Η κατάσταση οπλισμού βρίσκεται στο
+**protobuf πεδίο 20** (`1`=οπλισμένος, `2`=μερικός, `0`=αφοπλισμένος).
+
 ### Roadmap
 
-- Ακριβές mapping του protection-mode status field για σωστό state read-back
-- Υποστήριξη πολλαπλών protection modes
-- `arm_home`, `arm_night` και custom modes
-- Cloud/remote transport μέσω MQTT 5.0 over TLS προς `*.satel.cloud:8854`
-- Zones και sensors ως `binary_sensor` entities
+- Υποστήριξη πολλαπλών protection modes (`arm_home`, `arm_night`, custom)
+- Relays / outputs ως `switch` entities (όταν υπάρχουν ρυθμισμένα)
+- Time / timezone και network (LAN) ρυθμίσεις ως υπηρεσίες (commands `f92` / `f28` αποκωδικοποιημένα)
+- Keyfob button events (απαιτεί Event Log)
 
 ### Σημαντική σημείωση
 
@@ -135,12 +145,17 @@ It works with **BE WAVE Smart HUB** and **BE WAVE Smart HUB Plus**. It is not ha
 - 🔐 Sign-in with local username + password
 - 🛡️ `alarm_control_panel` entity in Home Assistant
 - ✅ Arm away / Disarm
-- ⚙️ Configurable protection-mode key for custom modes
+- 🔴 **Live state read-back** — the panel shows the real armed/disarmed state, **even when changed from the phone**, fully locally
+- 🚪 **Sensors**: door/window (opening) & motion detectors as `binary_sensor`
+- 🌡️ **Temperature & battery** per device as `sensor` (+ voltage, signal, system number as attributes)
+- 🎛️ **Hub setting switches**: LED indicator, GRADE 2, SATEL server connection
+- 🔑 **Auto-registration** (firmware 1.04+): generates its own device id and registers itself — no manual "add device" needed
+- ⚙️ Configurable protection-mode key
 - 🔒 AES-256-GCM crypto, fully local/on-device
 
-> **Status: v0.1.** Sign-in, arm/disarm and all crypto have been verified against a real unit.
-> Live **state read-back** into Home Assistant is best-effort in this version.
-> The panel currently reflects the last command optimistically. See Roadmap.
+> **Status: v0.4.** Sign-in, arm/disarm, live state, switches, **sensors (door/motion/temperature/battery) and auto-registration** verified against a real unit (fw 1.04).
+> Read-back is 100% local (works even with internet off): after sign-in the HUB pushes
+> device state immediately and on every change.
 
 ### Install via HACS custom repository
 
@@ -186,12 +201,13 @@ First install the dependency:
 pip install cryptography
 ```
 
-Then test:
+Then test (replace `USER` / `PASS` with your own credentials):
 
 ```bash
 python3 custom_components/bewave/bewave_client.py discover
-python3 custom_components/bewave/bewave_client.py arm    --host 192.168.10.129 --login USER --password 'PASS'
-python3 custom_components/bewave/bewave_client.py disarm --host 192.168.10.129 --login USER --password 'PASS'
+python3 custom_components/bewave/bewave_client.py status --host 192.168.1.50 --login USER --password 'PASS'
+python3 custom_components/bewave/bewave_client.py arm    --host 192.168.1.50 --login USER --password 'PASS'
+python3 custom_components/bewave/bewave_client.py disarm --host 192.168.1.50 --login USER --password 'PASS'
 ```
 
 ### How the protocol works
@@ -223,13 +239,17 @@ ARM/DISARM payload:
 protobuf f94{f1{f1{f1=mode, f2=1|0}}}
 ```
 
+**State read-back (local):** after sign-in the client subscribes to the device channels.
+The HUB then pushes an `f89` device-state message once immediately and again on every
+change — including arming/disarming from the phone. The arming state is carried in
+**protobuf field 20** (`1`=armed, `2`=partial, `0`=disarmed).
+
 ### Roadmap
 
-- Accurate mapping of the protection-mode status field for correct state read-back
-- Support for multiple protection modes
-- `arm_home`, `arm_night` and custom modes
-- Cloud/remote transport via MQTT 5.0 over TLS to `*.satel.cloud:8854`
-- Zones and sensors as `binary_sensor` entities
+- Multiple protection modes (`arm_home`, `arm_night`, custom)
+- Relays / outputs as `switch` entities (when configured)
+- Time / timezone and network (LAN) settings as services (commands `f92` / `f28` decoded)
+- Keyfob button events (requires Event Log)
 
 ### Disclaimer
 
