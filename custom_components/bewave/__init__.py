@@ -13,7 +13,7 @@ from .const import (DOMAIN, CONF_LOGIN, CONF_PASSWORD, CONF_HOST, CONF_SERIAL,
 from . import bewave_client as proto
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS = ["alarm_control_panel"]
+PLATFORMS = ["alarm_control_panel", "switch", "binary_sensor", "sensor"]
 
 
 class BeWaveHub:
@@ -27,56 +27,100 @@ class BeWaveHub:
         if serial:
             self.client.serial = serial
         self.conn: proto.LocalConnection | None = None
-        # last known state for the panel: "armed_away" | "disarmed" | "triggered" | None
-        self.state: str | None = None
+        self._registered = False
+        self.state: str | None = None          # armed_away | disarmed | None
+        self.flags = {"led": None, "grade2": None, "satel": None}
+        self.info = {"power": None, "stor_free": None, "stor_total": None,
+                     "network": None, "firmware": None}
+        self.dev_names: dict[int, dict] = {}   # config: name/room/model/sysnum/bypass
+        self.dev_state: dict[int, dict] = {}   # live telemetry
 
     def _ensure(self):
-        if self.conn is None:
+        if self.conn is not None:
+            return
+        self.conn = proto.LocalConnection(self.host, self.client)
+        self.conn.connect_and_signin()         # subscribes + registers
+        if not self._registered:
+            # firmware 1.04+: a self-registered device receives state only on a
+            # fresh sign-in. Register on connection #1, reconnect on #2.
+            self._registered = True
+            self.conn.close()
             self.conn = proto.LocalConnection(self.host, self.client)
-            # connect_and_signin() also subscribes to the device channels, so the
-            # hub immediately pushes the current device state (f89).
             self.conn.connect_and_signin()
-            _LOGGER.info("BE WAVE: signed in to %s (serial=%s)", self.host, self.client.serial)
+        _LOGGER.info("BE WAVE: signed in to %s (serial=%s)", self.host, self.client.serial)
 
     def poll(self):
         with self._lock:
             try:
                 self._ensure()
-                # Drain whatever the hub has pushed since the last poll. The hub
-                # pushes an f89 device-state message on connect and on every change
-                # (including arm/disarm done from the phone), so this reflects the
-                # real, current state — not just our own last command.
-                msgs = self.conn.read_messages(1)
-                self._update_state_from(msgs)
-                return {"state": self.state, "serial": self.client.serial}
-            except Exception as err:  # reconnect next time
+                self.conn.refresh()            # light re-subscribe (f88 + f26)
+                self._update_from(self.conn.read_messages(1))
+                return {"state": self.state}
+            except Exception as err:
                 try:
-                    if self.conn:
-                        self.conn.close()
+                    if self.conn: self.conn.close()
                 finally:
                     self.conn = None
                 raise UpdateFailed(f"BE WAVE poll failed: {err}") from err
 
-    def _update_state_from(self, msgs):
-        # field 20 inside the pushed f89 message: 1/2 = armed, 0 = disarmed.
+    def _update_from(self, msgs):
         for _fd, pt in msgs:
             if not pt:
                 continue
             st = proto.armed_state(pt)
             if st is not None:
                 self.state = "armed_away" if st else "disarmed"
+            fl = proto.system_status(pt)
+            if fl is not None:
+                self.flags.update(fl)
+            hi = proto.hub_info(pt)
+            if hi is not None:
+                self.info.update({"power": hi["power"], "stor_free": hi["stor_free"],
+                                  "stor_total": hi["stor_total"]})
+                if hi.get("firmware"):
+                    self.info["firmware"] = hi["firmware"]
+            net = proto.network_active(pt)
+            if net is not None:
+                self.info["network"] = net
+            cfg = proto.parse_config_devices(pt)
+            for did, d in cfg.items():
+                self.dev_names[did] = {k: d[k] for k in ("name", "room", "type", "model", "sysnum", "bypass")}
+                ds = self.dev_state.setdefault(did, {})
+                for k in ("signal", "battery", "state", "temp", "type", "volt"):
+                    if d.get(k) is not None:
+                        ds[k] = d[k]
+            for did, d in proto.parse_telemetry(pt).items():
+                self.dev_state.setdefault(did, {}).update({k: v for k, v in d.items() if v is not None})
+
+    def devices(self):
+        out = []
+        for did in set(self.dev_names) | set(self.dev_state):
+            nm = self.dev_names.get(did, {}); st = self.dev_state.get(did, {})
+            typ = nm.get("type") or st.get("type")
+            out.append({"id": did, "name": nm.get("name") or f"#{did}",
+                        "room": nm.get("room"), "model": nm.get("model"),
+                        "sysnum": nm.get("sysnum"), "bypass": nm.get("bypass"),
+                        "cat": proto.DEV_TYPES.get(typ, "device"),
+                        "state": st.get("state"), "temp": st.get("temp"),
+                        "battery": st.get("battery"), "signal": st.get("signal"),
+                        "volt": st.get("volt")})
+        return out
 
     def arm(self):
         with self._lock:
-            self._ensure()
-            self.conn.arm(self.mode)
-            self.state = "armed_away"          # optimistic; the push confirms it
-
+            self._ensure(); self.conn.arm(self.mode); self.state = "armed_away"
     def disarm(self):
         with self._lock:
+            self._ensure(); self.conn.disarm(self.mode); self.state = "disarmed"
+    def set_toggle(self, name, desired):
+        if name not in proto.SETTING_IDS:
+            return
+        with self._lock:
             self._ensure()
-            self.conn.disarm(self.mode)
-            self.state = "disarmed"            # optimistic; the push confirms it
+            cur = self.flags.get(name)
+            if cur is None or cur != desired:
+                self.conn.toggle_setting(proto.SETTING_IDS[name])
+            self.flags[name] = desired
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -94,8 +138,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return await hass.async_add_executor_job(hub.poll)
 
     coordinator = DataUpdateCoordinator(
-        hass, _LOGGER, name=DOMAIN,
-        update_method=_update,
+        hass, _LOGGER, name=DOMAIN, update_method=_update,
         update_interval=timedelta(seconds=SCAN_INTERVAL_SECONDS),
     )
     await coordinator.async_config_entry_first_refresh()
