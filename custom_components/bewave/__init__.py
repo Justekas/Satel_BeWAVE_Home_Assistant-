@@ -2,6 +2,7 @@
 from __future__ import annotations
 import logging
 import threading
+import time
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
@@ -42,10 +43,16 @@ class BeWaveHub:
         self.conn = proto.LocalConnection(self.host, self.client)
         self.conn.connect_and_signin()         # subscribes + registers
         if not self._registered:
-            # firmware 1.04+: a self-registered device receives state only on a
-            # fresh sign-in. Register on connection #1, reconnect on #2.
+            # firmware 1.04+: a brand-new self-generated device id gets FULL access
+            # (state + control) only AFTER it registers, the hub processes the
+            # registration (and the user approves the "new device" on their phone if
+            # prompted), and we then reconnect. The wait is essential — reconnecting
+            # immediately leaves the device read-only (it can read state but the hub
+            # ignores its arm/disarm commands). Proven with bewave_ownuuid.py.
             self._registered = True
             self.conn.close()
+            self.conn = None
+            time.sleep(8)
             self.conn = proto.LocalConnection(self.host, self.client)
             self.conn.connect_and_signin()
         _LOGGER.info("BE WAVE: signed in to %s (serial=%s)", self.host, self.client.serial)
@@ -155,12 +162,11 @@ class BeWaveHub:
 
     def arm(self):
         with self._lock:
-            self.state = "armed_away"
+            # do not claim "armed" until the hub confirms via read-back
             self._command(lambda: self.conn.arm(self.mode),
                           verify=lambda: self.state == "armed_away")
     def disarm(self):
         with self._lock:
-            self.state = "disarmed"
             self._command(lambda: self.conn.disarm(self.mode),
                           verify=lambda: self.state == "disarmed")
     def set_toggle(self, name, desired):

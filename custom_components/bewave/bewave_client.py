@@ -352,6 +352,12 @@ class LocalConnection:
             self.sock.sendall(self.client.command_message(self.client.register_plaintext()))
         except Exception:
             pass
+        # capture the hub's initial config (f45) + per-device telemetry (f89) burst,
+        # which is pushed once right after subscribing. The standalone app catches it
+        # via its continuous reader; here we read a few seconds so the first poll parses it.
+        t0 = time.time()
+        while time.time() - t0 < 3.5:
+            self._pump()
         return True
 
     def refresh(self):
