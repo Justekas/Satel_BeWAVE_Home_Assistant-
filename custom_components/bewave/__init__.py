@@ -121,6 +121,14 @@ class BeWaveHub:
                         ds[k] = d[k]
             for did, d in proto.parse_telemetry(pt).items():
                 self.dev_state.setdefault(did, {}).update({k: v for k, v in d.items() if v is not None})
+        # while armed, a currently-violated contact/motion zone means the alarm has
+        # been tripped -> show the panel as "triggered" (sounding)
+        if self.state == "armed_away":
+            for _did, _st in self.dev_state.items():
+                _typ = self.dev_names.get(_did, {}).get("type") or _st.get("type")
+                if _st.get("state") == 1 and proto.DEV_TYPES.get(_typ) in ("contact", "motion"):
+                    self.state = "triggered"
+                    break
 
     def devices(self):
         out = []
