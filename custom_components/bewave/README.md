@@ -1,12 +1,17 @@
 # BE WAVE (Satel) — Home Assistant integration
 
-Local control of a Satel **BE WAVE** Smart HUB alarm from Home Assistant, with no
+Local control of a Satel **BE WAVE** alarm from Home Assistant, with no
 hardware bridge and no cloud account — by speaking the HUB's own protocol
 (reverse-engineered: AES-256-GCM over TCP/4200, sign-in with your local user/password).
 
 > Status: **v0.1**. The crypto/sign-in/arm/disarm are verified against a real demo unit.
 > Live panel **state read-back** (armed/alarm) is best-effort and may need one tuning pass
 > on your unit — arm/disarm control works regardless.
+
+Verified against **BE WAVE Smart HUB** class devices. The integration itself is not tied to a
+Smart HUB-only label and can now be configured against other **BE WAVE controllers / control
+panels** that expose the same local protocol in the BE WAVE app, including newer models such as
+**HYBRID 128 Plus**. Those additional models are expected to work, but are not yet field-verified.
 
 ## What works (verified)
 - Local discovery (UDP/4111) and connect (TCP/4200)

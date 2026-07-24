@@ -20,7 +20,7 @@ from . import bewave_client as proto
 
 
 async def _validate(hass: HomeAssistant, data: dict) -> str:
-    """Connect + sign in. Returns the HUB serial. Raises on failure."""
+    """Connect + sign in. Returns the controller serial. Raises on failure."""
     def _do():
         client = proto.BeWaveClient(data[CONF_LOGIN], data[CONF_PASSWORD],
                                     data[CONF_DEVICE_UUID])
@@ -47,7 +47,7 @@ class BeWaveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         mac = discovery_info.macaddress.replace(":", "").upper()
         await self.async_set_unique_id(f"bewave_mac_{mac}")
         self._abort_if_unique_id_configured(updates={CONF_HOST: self._host})
-        self.context["title_placeholders"] = {"name": f"BE WAVE HUB ({self._host})"}
+        self.context["title_placeholders"] = {"name": f"BE WAVE controller ({self._host})"}
         return await self.async_step_user()
 
     async def async_step_user(self, user_input=None):

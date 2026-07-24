@@ -1,17 +1,24 @@
 """
-BE WAVE (Satel) protocol client — local TCP/4200.
-Reverse-engineered from pl.satel.bewave. Crypto verified on a demo unit (fw 1.04).
+BE WAVE (Satel) protocol client — local TCP/4200 + UDP/4111.
+Reverse-engineered from pl.satel.bewave.
+Verified on Smart HUB fw 1.04 and HYBRID 128 Plus fw 1.05.
 
 Self-contained & runnable standalone for testing:
     python3 bewave_client.py status --host 192.168.1.50 --login USER --password 'PASS'
     python3 bewave_client.py arm    --host 192.168.1.50 --login USER --password 'PASS'
     python3 bewave_client.py disarm --host 192.168.1.50 --login USER --password 'PASS'
+    python3 bewave_client.py probe  --host 192.168.1.50 --login USER --password 'PASS'
 
 Key chain (AES-256-GCM, IV = randomNumber||timestamp||counter, each BE32):
   sign-in  app->hub : key MD5(pw)*2            aad login
   sign-in  hub->app : key deviceUuid(ASCII)    aad MD5(login padded 64)
   ongoing  app->hub : key deviceUuid(ASCII)    aad MD5(sessionId)
   ongoing  hub->app : key sessionSecret(f4)    aad MD5(sessionId)
+
+Header notes (from pcap analysis):
+  APP->HUB messages: f2=payload_len, [f3=user_id, f4=device_id], f5=counter,
+                     f6=timestamp, f7=random.  NO f8 field.
+  HUB->APP messages: add f1=payload_offset, f8=b'\\x01\\x01' capability byte.
 
 Authorisation (firmware 1.04+): any self-chosen device receives live state after
 it registers (f8 push-token message) and then reconnects. See LocalConnection.
@@ -22,6 +29,11 @@ State / data sources:
   f27  hub status        -> LED/GRADE2/SATEL toggles, power, storage, firmware.
   f45  config            -> device names, rooms, model, system number.
   f31  connection methods-> active network (LAN/SIM).
+
+UDP discovery (port 4111):
+  Hub broadcasts unencrypted protobuf from port 4111 containing serial, IP, name,
+  firmware version.  Serial is required in the sign-in for HYBRID 128 Plus and
+  similar controllers; Smart HUB accepts an empty serial for initial sign-in.
 """
 import socket, struct, hashlib, time, secrets, sys
 
@@ -31,6 +43,7 @@ except ImportError:
     raise SystemExit("pip install cryptography")
 
 DATA_PORT = 4200
+DISCOVERY_PORT = 4111
 # Subscribe after sign-in so the hub starts sending state/config.
 STATE_SUBS = [88, 44, 26, 52, 46, 56, 58, 90, 24, 30]
 # Light re-subscribe used every poll to refresh device + settings (small + reliable).
@@ -223,11 +236,12 @@ def parse_config_devices(plaintext):
     return out
 
 # ---------- framing ----------
-def build_message(counter, plaintext, key, aad, user_id=2, device_id=4, with_ids=True):
+def build_message(counter, plaintext, key, aad, user_id=2, device_id=2, with_ids=True):
     ts = int(time.time()) & 0xffffffff; rnd = secrets.randbits(31)
     ids = (pb_varint(3, user_id) + pb_varint(4, device_id)) if with_ids else b''
+    # APP->HUB messages must NOT include f8; only HUB->APP carries it.
     header = (pb_fixed32(2, len(plaintext)) + ids + pb_varint(5, counter)
-              + pb_varint(6, ts) + pb_varint(7, rnd) + pb_bytes(8, b'\x01\x00'))
+              + pb_varint(6, ts) + pb_varint(7, rnd))
     iv = struct.pack('>III', rnd, ts, counter)
     ct = AESGCM(key).encrypt(iv, plaintext, aad)
     return b'\x0a' + _wv(len(header)) + header + ct
@@ -328,12 +342,61 @@ class BeWaveClient:
             return False
 
 
+def udp_discover_serial(host, timeout=3):
+    """Query the hub's UDP/4111 discovery port and return the serial string.
+
+    The hub broadcasts unencrypted protobuf packets from port 4111 that contain
+    the device serial, IP:port, name, and firmware version.  Sending an empty
+    datagram to the hub triggers an immediate response.  Returns None on failure.
+
+    Protocol (from pcap):
+      top-level f1  = 16-byte timing block
+      top-level f25 = device-info wrapper
+        f25.f1.f1   = serial (ASCII, e.g. "001B9C18210D2011848183891DJMCHSBGLA")
+        f25.f1.f2   = "ip:port"
+        f25.f1.f4   = device name
+        f25.f1.f7   = firmware/capability block (contains firmware string at f9)
+    """
+    import socket as _socket
+    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    try:
+        sock.bind(('', 0))
+        sock.sendto(b'', (host, DISCOVERY_PORT))
+        data, addr = sock.recvfrom(4096)
+        if not data:
+            return None
+        top = pb_read(data)
+        # f25 → f1 → f1 = serial bytes
+        if 25 not in top:
+            return None
+        inner1 = pb_read(top[25][0])
+        if 1 not in inner1:
+            return None
+        device_info = pb_read(inner1[1][0])
+        if 1 not in device_info:
+            return None
+        serial_raw = device_info[1][0]
+        if isinstance(serial_raw, (bytes, bytearray)):
+            return serial_raw.decode('latin1')
+        return str(serial_raw)
+    except Exception:
+        return None
+    finally:
+        sock.close()
+
+
 class LocalConnection:
     def __init__(self, host, client, port=DATA_PORT, timeout=8):
         self.host = host; self.port = port; self.client = client; self.timeout = timeout
         self.sock = None; self._buf = b''
 
     def connect_and_signin(self):
+        # Auto-discover serial via UDP/4111 before first sign-in if not already known.
+        if not self.client.serial:
+            discovered = udp_discover_serial(self.host)
+            if discovered:
+                self.client.serial = discovered
         self.sock = socket.create_connection((self.host, self.port), self.timeout)
         self.sock.settimeout(self.timeout)
         self.sock.sendall(self.client.signin_message())
@@ -409,13 +472,85 @@ class LocalConnection:
         except Exception: pass
 
 
+def _raw_probe(host, login, password, serial=None, uuid=None, timeout=10):
+    """Send sign-in and capture raw bytes before hub closes connection.
+    Useful for diagnosing protocol differences on newer controllers."""
+    import socket as _socket
+    c = BeWaveClient(login, password, uuid)
+    if serial:
+        c.serial = serial
+    else:
+        # Auto-discover serial via UDP so sign-in includes the required serial field.
+        discovered = udp_discover_serial(host)
+        if discovered:
+            print(f"[probe] UDP discovered serial: {discovered!r}")
+            c.serial = discovered
+        else:
+            print("[probe] UDP serial discovery failed — sending without serial")
+    msg = c.signin_message()
+    print(f"[probe] connecting to {host}:4200 ...")
+    sock = _socket.create_connection((host, DATA_PORT), timeout)
+    sock.settimeout(timeout)
+    print(f"[probe] TCP connected. sending sign-in ({len(msg)} bytes): {msg.hex()}")
+    sock.sendall(msg)
+    buf = b""
+    for _ in range(20):
+        try:
+            chunk = sock.recv(4096)
+            if not chunk:
+                print(f"[probe] hub closed connection. total received: {len(buf)} bytes")
+                break
+            buf += chunk
+            print(f"[probe] received {len(chunk)} bytes (total {len(buf)}): {chunk.hex()}")
+        except _socket.timeout:
+            print("[probe] socket timeout waiting for data")
+            break
+    sock.close()
+    if buf:
+        print(f"\n[probe] full raw response ({len(buf)} bytes):")
+        for i in range(0, len(buf), 32):
+            print(f"  {i:04x}: {buf[i:i+32].hex()}")
+        print("\n[probe] attempting to parse response header ...")
+        try:
+            parsed = parse_header(buf, 0)
+            if parsed:
+                fd, hlen, off = parsed
+                print(f"[probe] header fields: {fd}, payload offset: {off}")
+                # try all decryption keys
+                for key, aad in c._decrypt_keys():
+                    ct_len = fd.get(2, 0)
+                    ct = buf[off:off + ct_len]
+                    tag = buf[off + ct_len:off + ct_len + 16]
+                    iv = struct.pack('>III', fd.get(7, 0) & 0xffffffff,
+                                     fd.get(6, 0) & 0xffffffff, fd.get(5, 0) & 0xffffffff)
+                    try:
+                        pt = AESGCM(key).decrypt(iv, ct + tag, aad)
+                        print(f"[probe] decrypted with key={key[:8].hex()}... aad={aad[:8].hex()}...")
+                        print(f"[probe] plaintext hex: {pt.hex()}")
+                        print(f"[probe] plaintext fields: {pb_read(pt)}")
+                        break
+                    except Exception:
+                        pass
+                else:
+                    print("[probe] could not decrypt with any known key")
+            else:
+                print("[probe] response doesn't look like a valid message frame")
+        except Exception as e:
+            print(f"[probe] parse error: {e}")
+    else:
+        print("[probe] no data received from hub before close")
+
+
 def _cli():
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("action", choices=["status", "arm", "disarm"])
+    ap.add_argument("action", choices=["status", "arm", "disarm", "probe"])
     ap.add_argument("--host"); ap.add_argument("--login"); ap.add_argument("--password")
     ap.add_argument("--serial"); ap.add_argument("--uuid"); ap.add_argument("--mode", default="defau")
     a = ap.parse_args()
+    if a.action == "probe":
+        _raw_probe(a.host, a.login, a.password, a.serial, a.uuid)
+        return
     c = BeWaveClient(a.login, a.password, a.uuid)
     if a.serial: c.serial = a.serial
     conn = LocalConnection(a.host, c)

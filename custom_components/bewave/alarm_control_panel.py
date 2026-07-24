@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DEFAULT_CONTROLLER_MODEL, DOMAIN
 
 _STATE_MAP = {
     "armed_away": AlarmControlPanelState.ARMED_AWAY,
@@ -34,19 +34,32 @@ class BeWaveAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
     def __init__(self, coordinator, hub, entry: ConfigEntry):
         super().__init__(coordinator)
         self._hub = hub
-        serial = entry.data.get("serial") or entry.entry_id
-        self._attr_unique_id = f"bewave_{serial}_panel"
+        self._serial = entry.data.get("serial") or entry.entry_id
+        self._attr_unique_id = f"bewave_{self._serial}_panel"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, serial)},
+            identifiers={(DOMAIN, self._serial)},
             manufacturer="Satel",
-            model="BE WAVE Smart HUB",
-            name=f"BE WAVE {serial}",
+            model=DEFAULT_CONTROLLER_MODEL,
+            name=entry.title or f"BE WAVE {self._serial}",
         )
 
     @property
     def alarm_state(self) -> AlarmControlPanelState | None:
         st = self._hub.state or (self.coordinator.data or {}).get("state")
         return _STATE_MAP.get(st)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | int | None]:
+        return {
+            "serial": self._serial,
+            "host": self._hub.host,
+            "firmware": self._hub.info.get("firmware"),
+            "network": self._hub.info.get("network"),
+            "power_pct": self._hub.info.get("power"),
+            "storage_free": self._hub.info.get("stor_free"),
+            "storage_total": self._hub.info.get("stor_total"),
+            "protection_mode": self._hub.mode,
+        }
 
     async def async_alarm_arm_away(self, code=None):
         await self.hass.async_add_executor_job(self._hub.arm)

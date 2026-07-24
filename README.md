@@ -4,11 +4,11 @@
 
 ## Ελληνικά
 
-Custom integration για το **Home Assistant** που επιτρέπει τοπικό έλεγχο ενός συναγερμού **Satel BE WAVE Smart HUB** από το Home Assistant, χωρίς hardware bridge και χωρίς cloud λογαριασμό.
+Custom integration για το **Home Assistant** που επιτρέπει τοπικό έλεγχο ενός συναγερμού **Satel BE WAVE** από το Home Assistant, χωρίς hardware bridge και χωρίς cloud λογαριασμό.
 
 Η σύνδεση γίνεται απευθείας στο τοπικό δίκτυο, χρησιμοποιώντας το local protocol του HUB, με authentication μέσω του **τοπικού username και password** του χρήστη.
 
-Λειτουργεί με **BE WAVE Smart HUB** και **BE WAVE Smart HUB Plus**. Δεν είναι δεμένο σε συγκεκριμένη συσκευή. Ο χρήστης βάζει τα δικά του στοιχεία σύνδεσης, το serial γίνεται auto-discovery όπου είναι δυνατόν και δημιουργείται αυτόματα μοναδικό device identity ανά εγκατάσταση.
+Έχει επαληθευτεί με **BE WAVE Smart HUB** και **BE WAVE Smart HUB Plus**. Η integration πλέον δεν είναι δεμένη σε ονομασία συγκεκριμένου HUB και αντιμετωπίζει τη μονάδα ως γενικό **BE WAVE controller / control panel**, ώστε να μπορεί να συνδεθεί και με νεότερα μοντέλα που μιλάνε το ίδιο local protocol μέσω της εφαρμογής **BE WAVE**, όπως το **HYBRID 128 Plus**. Για τέτοια μοντέλα η συμβατότητα είναι **expected but not yet field-verified**.
 
 ### Δυνατότητες
 
@@ -133,11 +133,11 @@ protobuf f94{f1{f1{f1=mode, f2=1|0}}}
 
 ## English
 
-Custom **Home Assistant** integration for local control of a **Satel BE WAVE Smart HUB** alarm system, without a hardware bridge and without a cloud account.
+Custom **Home Assistant** integration for local control of a **Satel BE WAVE** alarm system, without a hardware bridge and without a cloud account.
 
 The integration connects directly over the local network and speaks the HUB's own local protocol, using the user's **local username and password** for authentication.
 
-It works with **BE WAVE Smart HUB** and **BE WAVE Smart HUB Plus**. It is not hard-coded to a specific unit. The user enters their own credentials, the serial is auto-discovered where possible, and a unique device identity is generated automatically per installation.
+It has been verified with **BE WAVE Smart HUB** and **BE WAVE Smart HUB Plus**. The integration is no longer tied to a Smart HUB-specific product label and now treats the target as a generic **BE WAVE controller / control panel**, which makes it suitable for newer BE WAVE units that expose the same local protocol through the **BE WAVE** app, such as **HYBRID 128 Plus**. Those additional models are **expected to work, but not yet field-verified**.
 
 ### Features
 

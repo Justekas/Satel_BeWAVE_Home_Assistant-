@@ -7,7 +7,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DEFAULT_CONTROLLER_MODEL, DOMAIN
 
 # key -> (display name, reliability note)
 SWITCHES = [
@@ -39,8 +39,8 @@ class BeWaveSettingSwitch(CoordinatorEntity, SwitchEntity):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, serial)},
             manufacturer="Satel",
-            model="BE WAVE Smart HUB",
-            name=f"BE WAVE {serial}",
+            model=DEFAULT_CONTROLLER_MODEL,
+            name=entry.title or f"BE WAVE {serial}",
         )
 
     @property

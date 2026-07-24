@@ -10,3 +10,4 @@ CONF_MODE = "mode"
 DEFAULT_MODE = "defau"   # "default" protection mode key
 DEFAULT_PORT = 4200
 SCAN_INTERVAL_SECONDS = 5
+DEFAULT_CONTROLLER_MODEL = "BE WAVE controller"
