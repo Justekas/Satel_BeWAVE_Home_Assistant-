@@ -245,14 +245,27 @@ def _parse_device_entry(dd, rname, out):
     cat, idx = _dev_id(dd[1][0])
     tel = {"type": None}
     is_output = False
+    model_fld = dd.get(2, [None])[0]
     if 20 in dd:
         t = pb_read(dd[20][0])
         tel = _telem_from_block(t[3][0] if 3 in t else None, t.get(2, []))
         if 3 in t:
             f3b = pb_read(t[3][0])
+            # Log ALL f3b integer fields so we can identify the is_output flag
+            f3b_ints = {k: f3b[k][0] for k in sorted(f3b.keys())
+                        if f3b[k] and isinstance(f3b[k][0], int)}
+            _LOGGER.debug("bewave device f20.f3 ints: %s", f3b_ints)
             is_output = bool(f3b.get(5, [0])[0])
+        # Log ALL t (f20 block) integer fields for output-flag discovery
+        t_ints = {k: t[k][0] for k in sorted(t.keys())
+                  if t[k] and isinstance(t[k][0], int)}
+        _LOGGER.debug("bewave device f20 ints: %s", t_ints)
     sysnum = dd.get(21, [None])[0]
     name = _s(dd.get(9, [b''])[0])
+    # Log ALL dd-level integer fields — one of these should distinguish zone from output
+    dd_ints = {k: dd[k][0] for k in sorted(dd.keys())
+               if dd[k] and isinstance(dd[k][0], int) and k not in (9, 20)}
+    _LOGGER.debug("bewave device dd name=%r model_fld=%s dd_ints=%s", name, model_fld, dd_ints)
     devkey = _dev_key(cat, idx, sysnum, is_output)
     _LOGGER.debug("bewave config device key=%s name=%r room=%r f1=%s f2=%s sysnum=%s is_output=%s type=%s",
                   devkey, name, rname, cat, idx, sysnum, is_output, tel.get("type"))
@@ -315,27 +328,28 @@ def parse_config_partitions(plaintext):
     if 1 not in top: return {}
     body = pb_read(top[1][0])
     modes = {}
-    # f4 = rooms (NOT partitions — rooms are just zone groupings for display)
-    # f3 = user accounts (skip)
-    # f2 = potential arming mode definitions
+    # Explore body.f1 — currently unused, might contain mode definitions
+    for i, block in enumerate(body.get(1, [])):
+        pb = pb_read(block)
+        _LOGGER.debug("bewave f45 body.f1[%d]: fields=%s", i, sorted(pb.keys()))
+        # Try to extract a mode name from any string-like field
+        for fnum in sorted(pb.keys()):
+            if pb[fnum] and isinstance(pb[fnum][0], bytes) and 2 <= len(pb[fnum][0]) <= 32:
+                _LOGGER.debug("  body.f1[%d].f%d = %r", i, fnum, _s(pb[fnum][0]))
+    # body.f2 — confirmed to have only {13: 111} (not modes), log for reference
     for i, block in enumerate(body.get(2, [])):
         pb = pb_read(block)
         _LOGGER.debug("bewave f45 body.f2[%d]: fields=%s raw_vals=%s",
                       i, sorted(pb.keys()),
                       {k: (pb[k][0] if len(pb[k]) == 1 else pb[k]) for k in sorted(pb.keys())})
-        # Try various fields for name and id
-        mid = pb.get(1, [None])[0]
-        mname_raw = pb.get(9, pb.get(2, [b'']))[0]
-        mname = _s(mname_raw) if isinstance(mname_raw, bytes) else None
-        if mname:
-            modes[mname] = {"name": mname, "mode": mname, "id": mid}
-    # Also log rooms to confirm they're just display groupings
-    for i, room in enumerate(body.get(4, [])):
-        rd = pb_read(room)
-        rname = _s(rd.get(2, [b''])[0])
-        _LOGGER.debug("bewave f45 room[%d]: id=%s name=%r devices=%d",
-                      i, rd.get(1, [None])[0], rname, len(rd.get(5, [])))
-    # Log any other top-level fields that might contain mode info
+    # body.f3 = user accounts — scan for mode-like strings anyway
+    for i, block in enumerate(body.get(3, [])):
+        pb = pb_read(block)
+        _LOGGER.debug("bewave f45 body.f3[%d]: fields=%s", i, sorted(pb.keys()))
+        for fnum in sorted(pb.keys()):
+            if pb[fnum] and isinstance(pb[fnum][0], bytes) and 2 <= len(pb[fnum][0]) <= 32:
+                _LOGGER.debug("  body.f3[%d].f%d = %r", i, fnum, _s(pb[fnum][0]))
+    # Log any other top-level fields
     for fnum in sorted(body.keys()):
         if fnum not in (1, 2, 3, 4):
             _LOGGER.debug("bewave f45 body field %d: %d entries", fnum, len(body[fnum]))
@@ -351,6 +365,17 @@ def parse_armed_states(plaintext):
     if 1 not in top: return {}
     f1 = pb_read(top[1][0])
     _LOGGER.debug("bewave f89 f1 fields: %s", sorted(f1.keys()))
+    # Dump ALL f1 integer scalars for arm-mode discovery
+    f1_ints = {k: f1[k][0] for k in sorted(f1.keys())
+               if f1[k] and isinstance(f1[k][0], int)}
+    if f1_ints:
+        _LOGGER.debug("bewave f89 f1 int scalars: %s", f1_ints)
+    # Dump any bytes-type sub-blocks at every field number
+    for fnum in sorted(f1.keys()):
+        if f1[fnum] and isinstance(f1[fnum][0], bytes):
+            for bi, blk in enumerate(f1[fnum]):
+                pb = pb_read(blk)
+                _LOGGER.debug("bewave f89 f1.f%d[%d] fields=%s", fnum, bi, sorted(pb.keys()))
     states = {}
     # Per-partition state blocks might be in f1.f3/f1.f4/f1.f5 etc.
     # Each block should have f1=partition_id and f20=arm_mode (0=off, 1/2=armed).
