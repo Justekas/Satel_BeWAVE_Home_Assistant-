@@ -53,7 +53,7 @@ ALARM_ARMED_FIELD = 20
 SETTING_IDS = {"led": 5, "grade2": 12, "satel": 11}
 # device category by telemetry field f10
 DEV_TYPES = {0x10002: "keyfob", 0x10003: "motion", 0x10007: "contact",
-             0x10503: "output"}
+             0x10503: "contact"}  # 0x10503 = wired zone/input
 # device model by config field f2 (verified from the app)
 DEV_MODELS = {11: "APD-200", 26: "APT-210", 42: "AXD-200 Lite"}
 

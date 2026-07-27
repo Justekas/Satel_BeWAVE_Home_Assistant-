@@ -77,11 +77,17 @@ class BeWaveHub:
                 if msgs:
                     self._empty = 0
                     self._update_from(msgs)
+                    # HYBRID closes TCP after every burst. Proactively reconnect
+                    # now so the buffer is pre-filled for the next poll instead of
+                    # spending an entire poll interval on an empty reconnect cycle.
+                    if self.conn._closed:
+                        try:
+                            self._reconnect()
+                        except Exception:
+                            pass
                 else:
-                    # HYBRID closes the TCP connection after each burst; one silent
-                    # poll is normal — reconnect immediately and drain fresh state
-                    # from the new pipeline. For Smart HUB (persistent connection),
-                    # require 3 consecutive empties before reconnecting.
+                    # A healthy session answers a refresh with telemetry; several
+                    # silent polls in a row mean the hub dropped us -> reconnect.
                     self._empty += 1
                     if self._empty >= 3:
                         _LOGGER.info("BE WAVE: stale session, reconnecting")
