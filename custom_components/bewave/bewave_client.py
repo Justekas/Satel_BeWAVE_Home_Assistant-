@@ -192,6 +192,14 @@ def _telem_from_block(f3block, f2list):
             "type": f3.get(10, [None])[0], "temp": temp,
             "volt": _f32(f3[110][0]) if 110 in f3 else None}
 
+def _dev_id(id_block_bytes):
+    """Extract unique device index from the identity block.
+    The block has f1=category (always 1) and f2=index within category.
+    f2 is unique per device (1=zone1, 2=zone2, 5=output1 …); f1 is not."""
+    ib = pb_read(id_block_bytes)
+    idx = ib.get(2, ib.get(1, [None]))[0]
+    return idx
+
 def parse_telemetry(plaintext):
     """f89 -> {devid: telemetry}."""
     d = pb_read(plaintext)
@@ -202,14 +210,14 @@ def parse_telemetry(plaintext):
     for dev in f1.get(2, []):
         dd = pb_read(dev)
         if 1 not in dd: continue
-        devid = pb_read(dd[1][0]).get(1, [None])[0]
+        devid = _dev_id(dd[1][0])
         if devid is None: continue
         body = pb_read(dd[2][0]) if 2 in dd else {}
         out[devid] = _telem_from_block(body[3][0] if 3 in body else None, body.get(2, []))
     return out
 
 def parse_config_devices(plaintext):
-    """f45 -> {devid: {name, room, type, model, sysnum, bypass, + telemetry}}."""
+    """f45 -> {devid: {name, room, type, is_output, model, sysnum, bypass, + telemetry}}."""
     d = pb_read(plaintext)
     if 45 not in d: return {}
     top = pb_read(d[45][0])
@@ -220,14 +228,19 @@ def parse_config_devices(plaintext):
         for dev in rd.get(5, []):
             dd = pb_read(dev)
             if 1 not in dd: continue
-            devid = pb_read(dd[1][0]).get(1, [None])[0]
+            devid = _dev_id(dd[1][0])
             if devid is None: continue
             tel = {"type": None}
+            is_output = False
             if 20 in dd:
                 t = pb_read(dd[20][0])
                 tel = _telem_from_block(t[3][0] if 3 in t else None, t.get(2, []))
+                # f20.f3.f5 == 1 marks PGM/relay outputs; inputs have it absent
+                if 3 in t:
+                    f3b = pb_read(t[3][0])
+                    is_output = bool(f3b.get(5, [0])[0])
             out[devid] = {"name": _s(dd.get(9, [b''])[0]), "room": rname,
-                          "type": tel.get("type"),
+                          "type": tel.get("type"), "is_output": is_output,
                           "model": DEV_MODELS.get(dd.get(2, [None])[0]),
                           "sysnum": dd.get(21, [None])[0],
                           "bypass": bool(dd.get(22, [0])[0]),

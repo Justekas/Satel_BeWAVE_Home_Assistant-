@@ -137,7 +137,7 @@ class BeWaveHub:
                 self.info["network"] = net
             cfg = proto.parse_config_devices(pt)
             for did, d in cfg.items():
-                self.dev_names[did] = {k: d[k] for k in ("name", "room", "type", "model", "sysnum", "bypass")}
+                self.dev_names[did] = {k: d[k] for k in ("name", "room", "type", "is_output", "model", "sysnum", "bypass")}
                 ds = self.dev_state.setdefault(did, {})
                 for k in ("signal", "battery", "state", "temp", "type", "volt"):
                     if d.get(k) is not None:
@@ -158,10 +158,15 @@ class BeWaveHub:
         for did in set(self.dev_names) | set(self.dev_state):
             nm = self.dev_names.get(did, {}); st = self.dev_state.get(did, {})
             typ = nm.get("type") or st.get("type")
+            # is_output flag set in parse_config_devices overrides DEV_TYPES lookup
+            if nm.get("is_output"):
+                cat = "output"
+            else:
+                cat = proto.DEV_TYPES.get(typ, "device")
             out.append({"id": did, "name": nm.get("name") or f"#{did}",
                         "room": nm.get("room"), "model": nm.get("model"),
                         "sysnum": nm.get("sysnum"), "bypass": nm.get("bypass"),
-                        "cat": proto.DEV_TYPES.get(typ, "device"),
+                        "cat": cat,
                         "state": st.get("state"), "temp": st.get("temp"),
                         "battery": st.get("battery"), "signal": st.get("signal"),
                         "volt": st.get("volt")})
