@@ -52,7 +52,8 @@ ALARM_ARMED_FIELD = 20
 # Site-setting toggles. Command is a FLIP: f34{f1{f1=id, f2{f3:{}}}}.
 SETTING_IDS = {"led": 5, "grade2": 12, "satel": 11}
 # device category by telemetry field f10
-DEV_TYPES = {0x10002: "keyfob", 0x10003: "motion", 0x10007: "contact"}
+DEV_TYPES = {0x10002: "keyfob", 0x10003: "motion", 0x10007: "contact",
+             0x10503: "output"}
 # device model by config field f2 (verified from the app)
 DEV_MODELS = {11: "APD-200", 26: "APT-210", 42: "AXD-200 Lite"}
 
@@ -419,9 +420,14 @@ def udp_discover_serial(host, timeout=3):
 class LocalConnection:
     def __init__(self, host, client, port=DATA_PORT, timeout=8):
         self.host = host; self.port = port; self.client = client; self.timeout = timeout
-        self.sock = None; self._buf = b''
+        self.sock = None; self._buf = b''; self._closed = False
 
-    def connect_and_signin(self):
+    def connect_and_signin(self, extra_plaintext=None):
+        # Close any previous socket before (re)connecting.
+        if self.sock is not None:
+            try: self.sock.close()
+            except Exception: pass
+        self._buf = b''; self._closed = False
         # Auto-discover serial via UDP/4111 before first sign-in if not already known.
         if not self.client.serial:
             discovered = udp_discover_serial(self.host)
@@ -445,6 +451,12 @@ class LocalConnection:
                     signed = True; break
         if not signed:
             raise BeWaveError("sign-in response not received/decrypted")
+        # Optional extra command (e.g. arm/disarm/toggle) sent before the state
+        # subscriptions so that the hub processes it first and reflects the new
+        # state in the subscribe responses that follow.
+        if extra_plaintext:
+            self.sock.sendall(self.client.command_message(extra_plaintext))
+            time.sleep(0.02)
         for f in STATE_SUBS:
             self.sock.sendall(self.client.command_message(self.client.subscribe_plaintext(f)))
             time.sleep(0.02)
@@ -461,6 +473,7 @@ class LocalConnection:
                 self._pump()
             except BeWaveError as err:
                 if "connection closed by hub" in str(err):
+                    self._closed = True   # HYBRID: hub closed; next send_command reconnects
                     break
                 raise
         return True
@@ -502,7 +515,15 @@ class LocalConnection:
             self._buf = b""
         return out
     def send_command(self, plaintext):
-        self.sock.sendall(self.client.command_message(plaintext))
+        try:
+            if self.sock is None or self._closed:
+                raise OSError("hub closed")
+            self.sock.sendall(self.client.command_message(plaintext))
+        except OSError:
+            # HYBRID closes TCP after each burst; reconnect and include the
+            # command in the new pipeline so the hub processes it before sending
+            # the fresh state snapshots back.
+            self.connect_and_signin(extra_plaintext=plaintext)
     def arm(self, mode="defau"):  self.send_command(self.client.arm_disarm_plaintext(True, mode))
     def disarm(self, mode="defau"): self.send_command(self.client.arm_disarm_plaintext(False, mode))
     def toggle_setting(self, setting_id): self.send_command(self.client.setting_toggle_plaintext(setting_id))

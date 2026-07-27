@@ -1,4 +1,4 @@
-"""BE WAVE binary sensors: opening (door/window) and motion detectors."""
+"""BE WAVE binary sensors: opening (door/window), motion detectors, and outputs."""
 from __future__ import annotations
 
 from homeassistant.components.binary_sensor import (
@@ -11,7 +11,8 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
 
 _CLASS = {"contact": BinarySensorDeviceClass.OPENING,
-          "motion": BinarySensorDeviceClass.MOTION}
+          "motion": BinarySensorDeviceClass.MOTION,
+          "output": None}   # PGM output — no specific HA device class
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
