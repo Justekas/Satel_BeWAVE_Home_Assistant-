@@ -78,12 +78,29 @@ class BeWaveHub:
                     self._empty = 0
                     self._update_from(msgs)
                 else:
-                    # A healthy session answers a refresh with telemetry; several
-                    # silent polls in a row mean the hub dropped us -> reconnect.
+                    # HYBRID closes the TCP connection after each burst; one silent
+                    # poll is normal — reconnect immediately and drain fresh state
+                    # from the new pipeline. For Smart HUB (persistent connection),
+                    # require 3 consecutive empties before reconnecting.
                     self._empty += 1
                     if self._empty >= 3:
                         _LOGGER.info("BE WAVE: stale session, reconnecting")
                         self._reconnect()
+                        # drain the fresh pipeline burst collected during reconnect
+                        if self.conn and self.conn._buf:
+                            fresh = self.conn._drain()
+                            if fresh:
+                                self._empty = 0
+                                self._update_from(fresh)
+                    elif self._empty == 1:
+                        # could be HYBRID with hub-closed; try reconnect to get fresh state
+                        _LOGGER.debug("BE WAVE: no data from hub, attempting reconnect")
+                        self._reconnect()
+                        if self.conn and self.conn._buf:
+                            fresh = self.conn._drain()
+                            if fresh:
+                                self._empty = 0
+                                self._update_from(fresh)
                 return {"state": self.state}
             except Exception as err:
                 try:
@@ -165,7 +182,11 @@ class BeWaveHub:
             # stale, silent or unverified -> reconnect and try once more
             self._reconnect()
         if last:
-            _LOGGER.warning("BE WAVE: command failed: %s", last)
+            errno = getattr(last, "errno", None)
+            if errno in (32, 104, 10054) or "connection closed by hub" in str(last):
+                _LOGGER.debug("BE WAVE: command socket dropped (expected): %s", last)
+            else:
+                _LOGGER.warning("BE WAVE: command failed: %s", last)
         return False
 
     def arm(self):

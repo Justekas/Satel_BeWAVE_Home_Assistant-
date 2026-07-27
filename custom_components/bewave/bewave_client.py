@@ -283,6 +283,8 @@ class BeWaveClient:
         self.serial = None
         self.session_id = None
         self.session_secret = None
+        self.user_id = 2
+        self.device_id = 2
         self._counter = 0
         self.K_signin = md5(password) * 2
         self.A_signin = login.encode()
@@ -299,7 +301,8 @@ class BeWaveClient:
         if not self.session_id:
             raise BeWaveError("not signed in")
         return build_message(self.next_counter(), plaintext, self.uuid.encode(),
-                             md5(self.session_id))
+                             md5(self.session_id), user_id=self.user_id,
+                             device_id=self.device_id)
     def subscribe_plaintext(self, field): return pb_bytes(field, pb_bytes(1, b""))
     def register_plaintext(self):
         return pb_bytes(8, pb_bytes(1, pb_bytes(1, self.token.encode()) + pb_varint(2, 1)))
@@ -332,12 +335,39 @@ class BeWaveClient:
         ks.append((self.K_signin, self.A_signin))
         return ks
     def ingest_response(self, plaintext):
+        def _try_extract(fields):
+            if 2 not in fields or 3 not in fields or 4 not in fields:
+                return False
+            try:
+                serial_raw = fields[2][0]
+                sid_raw = fields[3][0]
+                secret_raw = fields[4][0]
+                self.serial = serial_raw.decode('latin1') if isinstance(serial_raw, (bytes, bytearray)) else str(serial_raw)
+                self.session_id = sid_raw.decode('latin1') if isinstance(sid_raw, (bytes, bytearray)) else str(sid_raw)
+                self.session_secret = secret_raw if isinstance(secret_raw, (bytes, bytearray)) else bytes(secret_raw)
+                return True
+            except Exception:
+                return False
+
         try:
-            l2 = pb_read(pb_read(pb_read(plaintext)[7][0])[1][0])
-            self.serial = l2[2][0].decode('latin1')
-            self.session_id = l2[3][0].decode('latin1')
-            self.session_secret = l2[4][0]
-            return True
+            top = pb_read(plaintext)
+            if 7 not in top:
+                return False
+            root = pb_read(top[7][0])
+            # Legacy response layout.
+            if 1 in root:
+                if _try_extract(pb_read(root[1][0])):
+                    return True
+                # HYBRID layout: session block may be nested under root[1].field6.
+                nested = pb_read(root[1][0])
+                for blk in nested.get(6, []):
+                    if _try_extract(pb_read(blk)):
+                        return True
+            # Some controllers place the session block directly under root.field6.
+            for blk in root.get(6, []):
+                if _try_extract(pb_read(blk)):
+                    return True
+            return False
         except Exception:
             return False
 
@@ -403,8 +433,15 @@ class LocalConnection:
         deadline = time.time() + self.timeout; signed = False
         while time.time() < deadline and not signed:
             self._pump()
-            for _fd, pt in self._drain():
+            for fd, pt in self._drain():
+                if fd.get(9) == 1:
+                    err_code = fd.get(10)
+                    if err_code is not None:
+                        raise BeWaveError(f"hub rejected sign-in (code {err_code})")
+                    raise BeWaveError("hub rejected sign-in")
                 if pt and len(pt) > 200 and self.client.ingest_response(pt):
+                    self.client.user_id = int(fd.get(3, self.client.user_id))
+                    self.client.device_id = int(fd.get(4, self.client.device_id))
                     signed = True; break
         if not signed:
             raise BeWaveError("sign-in response not received/decrypted")
@@ -420,7 +457,12 @@ class LocalConnection:
         # via its continuous reader; here we read a few seconds so the first poll parses it.
         t0 = time.time()
         while time.time() - t0 < 3.5:
-            self._pump()
+            try:
+                self._pump()
+            except BeWaveError as err:
+                if "connection closed by hub" in str(err):
+                    break
+                raise
         return True
 
     def refresh(self):
@@ -443,6 +485,8 @@ class LocalConnection:
                 raise BeWaveError("connection closed by hub")
         except socket.timeout:
             pass
+        except OSError as exc:
+            raise BeWaveError("connection closed by hub") from exc
     def _drain(self):
         out = []; i = 0
         while i < len(self._buf):
@@ -463,9 +507,21 @@ class LocalConnection:
     def disarm(self, mode="defau"): self.send_command(self.client.arm_disarm_plaintext(False, mode))
     def toggle_setting(self, setting_id): self.send_command(self.client.setting_toggle_plaintext(setting_id))
     def read_messages(self, seconds=2):
-        out = []; t0 = time.time()
+        # drain any data already in the buffer (HYBRID pipeline fills _buf during
+        # connect_and_signin; no need to pump a socket that is already closed)
+        out = self._drain()
+        if out:
+            return out
+        t0 = time.time()
         while time.time() - t0 < seconds:
-            self._pump(); out += self._drain()
+            try:
+                self._pump()
+            except BeWaveError as err:
+                if "connection closed by hub" in str(err):
+                    out += self._drain()
+                    break
+                raise
+            out += self._drain()
         return out
     def close(self):
         try: self.sock.close()
