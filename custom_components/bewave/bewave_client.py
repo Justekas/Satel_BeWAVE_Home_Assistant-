@@ -298,7 +298,66 @@ def parse_config_devices(plaintext):
     _LOGGER.debug("bewave f45 total devices parsed: %d → %s", len(out), list(out.keys()))
     return out
 
-# ---------- framing ----------
+def devkey_num(devkey):
+    """Strip 'z'/'o' prefix from devkey for backward-compatible unique_ids.
+    'o5' → '5', 'z2' → '2', '5' → '5' (already numeric — no change)."""
+    return str(devkey).lstrip("zo")
+
+def parse_config_partitions(plaintext):
+    """f45 -> {part_id: {name}} — partitions (areas) defined in the hub.
+    Logs all candidate structures to help identify the correct protobuf path."""
+    d = pb_read(plaintext)
+    if 45 not in d: return {}
+    top = pb_read(d[45][0])
+    if 1 not in top: return {}
+    body = pb_read(top[1][0])
+    parts = {}
+    # f3 = user accounts (from probe analysis).
+    # Partitions/areas are likely in f2 or f5; try both and log what we find.
+    for fnum in (2, 3, 5):
+        for i, block in enumerate(body.get(fnum, [])):
+            pb = pb_read(block)
+            pid = pb.get(1, [None])[0]
+            # Look for a name-like string in f2 or f9
+            nraw = pb.get(9, pb.get(2, [b'']))[0]
+            name = _s(nraw) if isinstance(nraw, bytes) else None
+            _LOGGER.debug("bewave f45 field%d[%d]: id=%s name=%r fields=%s",
+                          fnum, i, pid, name, sorted(pb.keys()))
+            # Only treat as a partition if it has both id and a non-empty name
+            if pid is not None and name:
+                parts[pid] = {"name": name}
+    _LOGGER.debug("bewave partitions found: %s", parts)
+    return parts
+
+def parse_armed_states(plaintext):
+    """f89 -> {part_id_or_None: True/False} per-partition arm states.
+    Returns {None: bool} when only a global state is found (single-partition hub)."""
+    d = pb_read(plaintext)
+    if 89 not in d: return {}
+    top = pb_read(d[89][0])
+    if 1 not in top: return {}
+    f1 = pb_read(top[1][0])
+    states = {}
+    # Per-partition state blocks are expected in f1.f3 or f1.f4; each block has
+    # f1=partition_id and f20=arm_mode (0=disarmed, 1/2=armed).
+    found_partition_blocks = False
+    for fnum in (3, 4):
+        for block in f1.get(fnum, []):
+            pb = pb_read(block)
+            pid = pb.get(1, [None])[0]
+            arm = pb.get(20, [None])[0]
+            if pid is not None and arm is not None:
+                _LOGGER.debug("bewave f89 field%d partition id=%s arm=%s", fnum, pid, arm)
+                states[pid] = arm in (1, 2)
+                found_partition_blocks = True
+    if not found_partition_blocks:
+        # Fallback: global arm state (any f20 == 1/2 anywhere in f89)
+        vals = find_varint(plaintext, ALARM_ARMED_FIELD)
+        if vals:
+            states[None] = any(v in (1, 2) for v in vals)
+    return states
+
+
 def build_message(counter, plaintext, key, aad, user_id=2, device_id=2, with_ids=True):
     ts = int(time.time()) & 0xffffffff; rnd = secrets.randbits(31)
     ids = (pb_varint(3, user_id) + pb_varint(4, device_id)) if with_ids else b''
@@ -369,8 +428,12 @@ class BeWaveClient:
     def subscribe_plaintext(self, field): return pb_bytes(field, pb_bytes(1, b""))
     def register_plaintext(self):
         return pb_bytes(8, pb_bytes(1, pb_bytes(1, self.token.encode()) + pb_varint(2, 1)))
-    def arm_disarm_plaintext(self, arm, mode="defau"):
+    def arm_disarm_plaintext(self, arm, mode="defau", partition_id=None):
         inner = pb_bytes(1, mode.encode()) + pb_varint(2, 1 if arm else 0)
+        if partition_id is not None:
+            # Include partition ID so only that area is armed/disarmed.
+            # The exact field number (f3?) is guessed; verify with pcap.
+            inner += pb_varint(3, partition_id)
         return pb_bytes(94, pb_bytes(1, pb_bytes(1, inner)))
     def setting_toggle_plaintext(self, setting_id):
         return pb_bytes(34, pb_bytes(1, pb_varint(1, setting_id) + pb_bytes(2, pb_bytes(3, b""))))

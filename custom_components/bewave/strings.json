@@ -10,12 +10,14 @@
           "login": "Local username",
           "password": "Local password",
           "mode": "Protection mode key (default: defau)",
-          "serial": "HUB serial (optional, auto-discovered if blank)"
+          "serial": "HUB serial (optional, auto-discovered if blank)",
+          "device_uuid": "Device UUID (optional, use app UUID for strict controllers)"
         }
       }
     },
     "error": {
-      "cannot_connect": "Could not connect / sign in. Check IP, username and password, and that Home Assistant is on the same network as the HUB."
+      "cannot_connect": "Could not connect / sign in. Check IP, username and password, and that Home Assistant is on the same network as the HUB.",
+      "invalid_auth": "Sign-in was rejected by the controller (code 31). Verify login/password and, for HYBRID controllers, try using the same device UUID as in the BE WAVE mobile app."
     },
     "abort": {
       "already_configured": "This BE WAVE HUB is already configured."

@@ -81,16 +81,19 @@ class BeWaveOutputSwitch(CoordinatorEntity, SwitchEntity):
     """Wired PGM/relay output on the BE WAVE controller."""
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator, hub, entry: ConfigEntry, devid: int):
+    def __init__(self, coordinator, hub, entry: ConfigEntry, devid):
         super().__init__(coordinator)
         self._hub = hub
         self._devid = devid
         serial = entry.data.get("serial") or entry.entry_id
         d = self._dev()
         self._attr_name = d.get("name") or f"Output {devid}"
-        self._attr_unique_id = f"bewave_{serial}_{devid}_output"
+        # Strip 'o'/'z' prefix so unique_id matches old integer-based scheme
+        from . import bewave_client as _proto
+        num = _proto.devkey_num(devid)
+        self._attr_unique_id = f"bewave_{serial}_{num}_output"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"{serial}_{devid}")},
+            identifiers={(DOMAIN, f"{serial}_{num}")},
             manufacturer="Satel",
             name=d.get("name") or f"BE WAVE Output {devid}",
             via_device=(DOMAIN, serial),

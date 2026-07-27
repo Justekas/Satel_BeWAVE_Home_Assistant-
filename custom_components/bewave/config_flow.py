@@ -53,9 +53,20 @@ class BeWaveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(self, user_input=None):
         errors = {}
         if user_input is not None:
-            user_input[CONF_DEVICE_UUID] = secrets.token_hex(16).upper()
+            user_input[CONF_DEVICE_UUID] = (
+                (user_input.get(CONF_DEVICE_UUID) or secrets.token_hex(16))
+                .strip()
+                .upper()[:32]
+            )
             try:
                 serial = await _validate(self.hass, user_input)
+            except proto.BeWaveError as err:
+                _LOGGER.error("BE WAVE sign-in failed for %s: %s",
+                              user_input.get(CONF_HOST), err)
+                if "code 31" in str(err):
+                    errors["base"] = "invalid_auth"
+                else:
+                    errors["base"] = "cannot_connect"
             except Exception as err:  # noqa: BLE001
                 _LOGGER.error("BE WAVE sign-in failed for %s: %s",
                               user_input.get(CONF_HOST), err)
@@ -74,6 +85,7 @@ class BeWaveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Required(CONF_PASSWORD): str,
             vol.Optional(CONF_MODE, default=DEFAULT_MODE): str,
             vol.Optional(CONF_SERIAL): str,
+            vol.Optional(CONF_DEVICE_UUID): str,
         })
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 

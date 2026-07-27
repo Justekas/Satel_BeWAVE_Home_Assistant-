@@ -7,6 +7,7 @@ from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (DOMAIN, CONF_LOGIN, CONF_PASSWORD, CONF_HOST, CONF_SERIAL,
@@ -37,6 +38,8 @@ class BeWaveHub:
         self.dev_names: dict[str, dict] = {}   # config: name/room/model/sysnum/bypass
         self.dev_state: dict[str, dict] = {}   # live telemetry
         self._id_map: dict[tuple, str] = {}    # (f1,f2) -> devkey, for telemetry lookup
+        self.partitions: dict[int, dict] = {}  # partition config: {id: {name}}
+        self.partition_states: dict[int | None, bool] = {}  # {part_id: is_armed}
 
     def _ensure(self):
         if self.conn is not None:
@@ -121,9 +124,19 @@ class BeWaveHub:
         for _fd, pt in msgs:
             if not pt:
                 continue
-            st = proto.armed_state(pt)
-            if st is not None:
-                self.state = "armed_away" if st else "disarmed"
+            # Per-partition arm states (replaces simple global state)
+            part_states = proto.parse_armed_states(pt)
+            if part_states:
+                self.partition_states.update(part_states)
+                # Global state: armed if any partition is armed
+                all_armed = [v for v in part_states.values() if v is not None]
+                if all_armed:
+                    self.state = "armed_away" if any(all_armed) else "disarmed"
+            else:
+                # Fallback to old single-value armed_state
+                st = proto.armed_state(pt)
+                if st is not None:
+                    self.state = "armed_away" if st else "disarmed"
             fl = proto.system_status(pt)
             if fl is not None:
                 self.flags.update(fl)
@@ -136,6 +149,10 @@ class BeWaveHub:
             net = proto.network_active(pt)
             if net is not None:
                 self.info["network"] = net
+            # Partition config
+            parts = proto.parse_config_partitions(pt)
+            if parts:
+                self.partitions.update(parts)
             cfg = proto.parse_config_devices(pt)
             for devkey, d in cfg.items():
                 self.dev_names[devkey] = {k: d[k] for k in
@@ -207,15 +224,19 @@ class BeWaveHub:
                 _LOGGER.warning("BE WAVE: command failed: %s", last)
         return False
 
-    def arm(self):
+    def arm(self, partition_id=None):
         with self._lock:
-            # do not claim "armed" until the hub confirms via read-back
-            self._command(lambda: self.conn.arm(self.mode),
-                          verify=lambda: self.state == "armed_away")
-    def disarm(self):
+            self._command(
+                lambda: self.conn.send_command(
+                    self.client.arm_disarm_plaintext(True, self.mode, partition_id)),
+                verify=lambda: self.state == "armed_away")
+
+    def disarm(self, partition_id=None):
         with self._lock:
-            self._command(lambda: self.conn.disarm(self.mode),
-                          verify=lambda: self.state == "disarmed")
+            self._command(
+                lambda: self.conn.send_command(
+                    self.client.arm_disarm_plaintext(False, self.mode, partition_id)),
+                verify=lambda: self.state == "disarmed")
     def set_toggle(self, name, desired):
         if name not in proto.SETTING_IDS:
             return
