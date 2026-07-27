@@ -304,31 +304,43 @@ def devkey_num(devkey):
     return str(devkey).lstrip("zo")
 
 def parse_config_partitions(plaintext):
-    """f45 -> {room_name: {name, mode}} — partitions (areas) = rooms in f45.f4.
-    In BE WAVE protocol, rooms ARE partitions: each room can be independently
-    armed/disarmed via arm_disarm_plaintext(mode=room_name)."""
+    """f45 -> {mode_key: {name, mode}} — arming modes = virtual partitions.
+    In BE WAVE HYBRID, rooms are just display groupings; the arming MODES
+    (e.g. 'defau', 'perimeter', 'night') act as independent virtual partitions.
+    Modes are likely defined in f45 body field 2; rooms (f4) are NOT partitions.
+    Logs all candidate fields so we can identify the correct location."""
     d = pb_read(plaintext)
     if 45 not in d: return {}
     top = pb_read(d[45][0])
     if 1 not in top: return {}
     body = pb_read(top[1][0])
-    parts = {}
+    modes = {}
+    # f4 = rooms (NOT partitions — rooms are just zone groupings for display)
+    # f3 = user accounts (skip)
+    # f2 = potential arming mode definitions
+    for i, block in enumerate(body.get(2, [])):
+        pb = pb_read(block)
+        _LOGGER.debug("bewave f45 body.f2[%d]: fields=%s raw_vals=%s",
+                      i, sorted(pb.keys()),
+                      {k: (pb[k][0] if len(pb[k]) == 1 else pb[k]) for k in sorted(pb.keys())})
+        # Try various fields for name and id
+        mid = pb.get(1, [None])[0]
+        mname_raw = pb.get(9, pb.get(2, [b'']))[0]
+        mname = _s(mname_raw) if isinstance(mname_raw, bytes) else None
+        if mname:
+            modes[mname] = {"name": mname, "mode": mname, "id": mid}
+    # Also log rooms to confirm they're just display groupings
     for i, room in enumerate(body.get(4, [])):
         rd = pb_read(room)
-        # Room f1=id, f2=name (= mode string used in arm command), f5=devices
-        rid = rd.get(1, [None])[0]
         rname = _s(rd.get(2, [b''])[0])
-        _LOGGER.debug("bewave f45 room[%d]: id=%s name=%r fields=%s devs=%d",
-                      i, rid, rname, sorted(rd.keys()), len(rd.get(5, [])))
-        if rname:
-            # Use room name as both key and mode string (the arm command uses it)
-            parts[rname] = {"name": rname, "mode": rname, "id": rid}
-    # Log unknown f45 body fields that might contain additional partition info
+        _LOGGER.debug("bewave f45 room[%d]: id=%s name=%r devices=%d",
+                      i, rd.get(1, [None])[0], rname, len(rd.get(5, [])))
+    # Log any other top-level fields that might contain mode info
     for fnum in sorted(body.keys()):
-        if fnum not in (1, 2, 3, 4, 5, 6):
-            _LOGGER.debug("bewave f45 body field %d has %d entries", fnum, len(body[fnum]))
-    _LOGGER.debug("bewave partitions (rooms): %s", list(parts.keys()))
-    return parts
+        if fnum not in (1, 2, 3, 4):
+            _LOGGER.debug("bewave f45 body field %d: %d entries", fnum, len(body[fnum]))
+    _LOGGER.debug("bewave arming modes found: %s", list(modes.keys()))
+    return modes
 
 def parse_armed_states(plaintext):
     """f89 -> {part_id_or_None: True/False} per-partition arm states.
