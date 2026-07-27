@@ -43,12 +43,11 @@ class BeWaveBinary(CoordinatorEntity, BinarySensorEntity):
         self._devid = devid
         self._attr_device_class = devclass
         serial = entry.data.get("serial") or entry.entry_id
-        from . import bewave_client as _proto
-        num = _proto.devkey_num(devid)
-        self._attr_unique_id = f"bewave_{serial}_{num}_state"
+        # Use full devkey (e.g. "z2") — keeps zones and outputs collision-free
+        self._attr_unique_id = f"bewave_{serial}_{devid}_state"
         d = self._dev()
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"{serial}_{num}")},
+            identifiers={(DOMAIN, f"{serial}_{devid}")},
             manufacturer="Satel", model=d.get("model"),
             name=d.get("name") or f"BE WAVE {devid}",
             via_device=(DOMAIN, serial),

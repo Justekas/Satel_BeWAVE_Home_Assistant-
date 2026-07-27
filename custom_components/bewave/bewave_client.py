@@ -304,29 +304,30 @@ def devkey_num(devkey):
     return str(devkey).lstrip("zo")
 
 def parse_config_partitions(plaintext):
-    """f45 -> {part_id: {name}} — partitions (areas) defined in the hub.
-    Logs all candidate structures to help identify the correct protobuf path."""
+    """f45 -> {room_name: {name, mode}} — partitions (areas) = rooms in f45.f4.
+    In BE WAVE protocol, rooms ARE partitions: each room can be independently
+    armed/disarmed via arm_disarm_plaintext(mode=room_name)."""
     d = pb_read(plaintext)
     if 45 not in d: return {}
     top = pb_read(d[45][0])
     if 1 not in top: return {}
     body = pb_read(top[1][0])
     parts = {}
-    # f3 = user accounts (from probe analysis).
-    # Partitions/areas are likely in f2 or f5; try both and log what we find.
-    for fnum in (2, 3, 5):
-        for i, block in enumerate(body.get(fnum, [])):
-            pb = pb_read(block)
-            pid = pb.get(1, [None])[0]
-            # Look for a name-like string in f2 or f9
-            nraw = pb.get(9, pb.get(2, [b'']))[0]
-            name = _s(nraw) if isinstance(nraw, bytes) else None
-            _LOGGER.debug("bewave f45 field%d[%d]: id=%s name=%r fields=%s",
-                          fnum, i, pid, name, sorted(pb.keys()))
-            # Only treat as a partition if it has both id and a non-empty name
-            if pid is not None and name:
-                parts[pid] = {"name": name}
-    _LOGGER.debug("bewave partitions found: %s", parts)
+    for i, room in enumerate(body.get(4, [])):
+        rd = pb_read(room)
+        # Room f1=id, f2=name (= mode string used in arm command), f5=devices
+        rid = rd.get(1, [None])[0]
+        rname = _s(rd.get(2, [b''])[0])
+        _LOGGER.debug("bewave f45 room[%d]: id=%s name=%r fields=%s devs=%d",
+                      i, rid, rname, sorted(rd.keys()), len(rd.get(5, [])))
+        if rname:
+            # Use room name as both key and mode string (the arm command uses it)
+            parts[rname] = {"name": rname, "mode": rname, "id": rid}
+    # Log unknown f45 body fields that might contain additional partition info
+    for fnum in sorted(body.keys()):
+        if fnum not in (1, 2, 3, 4, 5, 6):
+            _LOGGER.debug("bewave f45 body field %d has %d entries", fnum, len(body[fnum]))
+    _LOGGER.debug("bewave partitions (rooms): %s", list(parts.keys()))
     return parts
 
 def parse_armed_states(plaintext):
@@ -337,17 +338,19 @@ def parse_armed_states(plaintext):
     top = pb_read(d[89][0])
     if 1 not in top: return {}
     f1 = pb_read(top[1][0])
+    _LOGGER.debug("bewave f89 f1 fields: %s", sorted(f1.keys()))
     states = {}
-    # Per-partition state blocks are expected in f1.f3 or f1.f4; each block has
-    # f1=partition_id and f20=arm_mode (0=disarmed, 1/2=armed).
+    # Per-partition state blocks might be in f1.f3/f1.f4/f1.f5 etc.
+    # Each block should have f1=partition_id and f20=arm_mode (0=off, 1/2=armed).
     found_partition_blocks = False
-    for fnum in (3, 4):
+    for fnum in (3, 4, 5):
         for block in f1.get(fnum, []):
             pb = pb_read(block)
             pid = pb.get(1, [None])[0]
             arm = pb.get(20, [None])[0]
             if pid is not None and arm is not None:
-                _LOGGER.debug("bewave f89 field%d partition id=%s arm=%s", fnum, pid, arm)
+                _LOGGER.debug("bewave f89 field%d partition id=%s arm=%s fields=%s",
+                              fnum, pid, arm, sorted(pb.keys()))
                 states[pid] = arm in (1, 2)
                 found_partition_blocks = True
     if not found_partition_blocks:
@@ -428,12 +431,11 @@ class BeWaveClient:
     def subscribe_plaintext(self, field): return pb_bytes(field, pb_bytes(1, b""))
     def register_plaintext(self):
         return pb_bytes(8, pb_bytes(1, pb_bytes(1, self.token.encode()) + pb_varint(2, 1)))
-    def arm_disarm_plaintext(self, arm, mode="defau", partition_id=None):
+    def arm_disarm_plaintext(self, arm, mode="defau"):
+        """mode = partition/room name (e.g. 'defau' for default partition).
+        Each partition in BE WAVE is identified by its room name, which is passed
+        as the mode string.  To arm all partitions use the configured hub mode."""
         inner = pb_bytes(1, mode.encode()) + pb_varint(2, 1 if arm else 0)
-        if partition_id is not None:
-            # Include partition ID so only that area is armed/disarmed.
-            # The exact field number (f3?) is guessed; verify with pcap.
-            inner += pb_varint(3, partition_id)
         return pb_bytes(94, pb_bytes(1, pb_bytes(1, inner)))
     def setting_toggle_plaintext(self, setting_id):
         return pb_bytes(34, pb_bytes(1, pb_varint(1, setting_id) + pb_bytes(2, pb_bytes(3, b""))))
@@ -616,6 +618,8 @@ class LocalConnection:
                 pass
 
     def _pump(self):
+        if self.sock is None:
+            raise BeWaveError("connection closed by hub")
         try:
             data = self.sock.recv(8192)
             if data:
@@ -663,6 +667,9 @@ class LocalConnection:
         out = self._drain()
         if out:
             return out
+        # HYBRID: hub already closed TCP — don't try to recv on dead/None socket
+        if self._closed or self.sock is None:
+            return []
         t0 = time.time()
         while time.time() - t0 < seconds:
             try:

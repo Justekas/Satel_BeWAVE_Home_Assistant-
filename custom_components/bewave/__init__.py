@@ -42,7 +42,9 @@ class BeWaveHub:
         self.partition_states: dict[int | None, bool] = {}  # {part_id: is_armed}
 
     def _ensure(self):
-        if self.conn is not None:
+        # conn.sock being None means a previous connect_and_signin failed partway —
+        # treat it the same as conn=None and reconnect.
+        if self.conn is not None and self.conn.sock is not None:
             return
         self.conn = proto.LocalConnection(self.host, self.client)
         self.conn.connect_and_signin()         # subscribes + registers
@@ -88,7 +90,9 @@ class BeWaveHub:
                         try:
                             self._reconnect()
                         except Exception:
-                            pass
+                            # Failed proactive reconnect — clear conn so _ensure
+                            # tries again next poll instead of using a sock=None conn.
+                            self.conn = None
                 else:
                     # A healthy session answers a refresh with telemetry; several
                     # silent polls in a row mean the hub dropped us -> reconnect.
@@ -224,18 +228,22 @@ class BeWaveHub:
                 _LOGGER.warning("BE WAVE: command failed: %s", last)
         return False
 
-    def arm(self, partition_id=None):
+    def arm(self, partition_mode: str | None = None):
+        """Arm one partition (by mode/room name) or all partitions (mode=None)."""
+        mode = partition_mode if partition_mode is not None else self.mode
         with self._lock:
             self._command(
                 lambda: self.conn.send_command(
-                    self.client.arm_disarm_plaintext(True, self.mode, partition_id)),
+                    self.client.arm_disarm_plaintext(True, mode)),
                 verify=lambda: self.state == "armed_away")
 
-    def disarm(self, partition_id=None):
+    def disarm(self, partition_mode: str | None = None):
+        """Disarm one partition (by mode/room name) or all partitions (mode=None)."""
+        mode = partition_mode if partition_mode is not None else self.mode
         with self._lock:
             self._command(
                 lambda: self.conn.send_command(
-                    self.client.arm_disarm_plaintext(False, self.mode, partition_id)),
+                    self.client.arm_disarm_plaintext(False, mode)),
                 verify=lambda: self.state == "disarmed")
     def set_toggle(self, name, desired):
         if name not in proto.SETTING_IDS:
@@ -274,6 +282,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         update_interval=timedelta(seconds=SCAN_INTERVAL_SECONDS),
     )
     await coordinator.async_config_entry_first_refresh()
+
+    # Remove stale devices (old key scheme, removed hardware, user account ghosts)
+    # Use FULL devkey (e.g. "z1", "o5") to avoid zone/output collisions.
+    serial = entry.data.get(CONF_SERIAL) or entry.entry_id
+    valid_ids: set = {(DOMAIN, serial)}
+    for d in hub.devices():
+        valid_ids.add((DOMAIN, f"{serial}_{d['id']}"))
+    for part_key in hub.partitions:
+        valid_ids.add((DOMAIN, f"{serial}_part_{part_key}"))
+    dev_reg = dr.async_get(hass)
+    for dev_entry in dr.async_entries_for_config_entry(dev_reg, entry.entry_id):
+        if not dev_entry.identifiers.intersection(valid_ids):
+            _LOGGER.debug("BE WAVE: removing stale device %s", dev_entry.identifiers)
+            dev_reg.async_remove_device(dev_entry.id)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"hub": hub, "coordinator": coordinator}
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
