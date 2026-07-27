@@ -220,6 +220,12 @@ class BeWaveHub:
                 self.flags[name] = desired
             self._command(_send, verify=lambda: self.flags.get(name) == desired)
 
+    def toggle_output(self, devid):
+        """Toggle a wired PGM output on/off."""
+        sysnum = self.dev_names.get(devid, {}).get("sysnum") or devid
+        with self._lock:
+            self._command(lambda: self.conn.toggle_output(sysnum))
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hub = BeWaveHub(

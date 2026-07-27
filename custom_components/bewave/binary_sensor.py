@@ -11,8 +11,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
 
 _CLASS = {"contact": BinarySensorDeviceClass.OPENING,
-          "motion": BinarySensorDeviceClass.MOTION,
-          "output": None}   # PGM output — no specific HA device class
+          "motion": BinarySensorDeviceClass.MOTION}
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):

@@ -325,6 +325,10 @@ class BeWaveClient:
         return pb_bytes(94, pb_bytes(1, pb_bytes(1, inner)))
     def setting_toggle_plaintext(self, setting_id):
         return pb_bytes(34, pb_bytes(1, pb_varint(1, setting_id) + pb_bytes(2, pb_bytes(3, b""))))
+    def output_toggle_plaintext(self, sysnum):
+        # Best-effort command for wired PGM output toggle (field 86, sysnum as id).
+        # Verify with a pcap if this does not work with admin credentials.
+        return pb_bytes(86, pb_bytes(1, pb_varint(1, sysnum)))
 
     def decrypt(self, buf, i):
         parsed = parse_header(buf, i)
@@ -540,6 +544,7 @@ class LocalConnection:
     def arm(self, mode="defau"):  self.send_command(self.client.arm_disarm_plaintext(True, mode))
     def disarm(self, mode="defau"): self.send_command(self.client.arm_disarm_plaintext(False, mode))
     def toggle_setting(self, setting_id): self.send_command(self.client.setting_toggle_plaintext(setting_id))
+    def toggle_output(self, sysnum): self.send_command(self.client.output_toggle_plaintext(sysnum))
     def read_messages(self, seconds=2):
         # drain any data already in the buffer (HYBRID pipeline fills _buf during
         # connect_and_signin; no need to pump a socket that is already closed)
