@@ -35,7 +35,10 @@ UDP discovery (port 4111):
   firmware version.  Serial is required in the sign-in for HYBRID 128 Plus and
   similar controllers; Smart HUB accepts an empty serial for initial sign-in.
 """
+import logging
 import socket, struct, hashlib, time, secrets, sys
+
+_LOGGER = logging.getLogger(__name__)
 
 try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -193,60 +196,106 @@ def _telem_from_block(f3block, f2list):
             "volt": _f32(f3[110][0]) if 110 in f3 else None}
 
 def _dev_id(id_block_bytes):
-    """Extract unique device index from the identity block.
-    The block has f1=category (always 1) and f2=index within category.
-    f2 is unique per device (1=zone1, 2=zone2, 5=output1 …); f1 is not."""
+    """Read (f1=category, f2=module-relative index) from an identity block.
+    Returns (f1, f2) so callers can build collision-free composite keys."""
     ib = pb_read(id_block_bytes)
-    idx = ib.get(2, ib.get(1, [None]))[0]
-    return idx
+    f1 = ib.get(1, [None])[0]
+    f2 = ib.get(2, [None])[0]
+    return f1, f2
 
-def parse_telemetry(plaintext):
-    """f89 -> {devid: telemetry}."""
+def _dev_key(f1, f2, sysnum, is_output):
+    """Build a globally-unique device key.
+    Zones and outputs can share the same f2/sysnum numbering, so encode
+    the category in the key prefix: 'o' for PGM outputs, 'z' for zones.
+    Prefer sysnum (system-wide number) over f2 (module-relative index)."""
+    num = sysnum if sysnum is not None else f2
+    if num is None:
+        num = f"{f1}_{f2}"
+    return f"o{num}" if is_output else f"z{num}"
+
+def parse_telemetry(plaintext, id_map=None):
+    """f89 -> {devkey: telemetry}.
+    id_map (optional): {(f1,f2): devkey} built from a prior config parse so
+    that telemetry keys match config keys even when modules share f2 numbers."""
     d = pb_read(plaintext)
     if 89 not in d: return {}
     top = pb_read(d[89][0])
     if 1 not in top: return {}
-    f1 = pb_read(top[1][0]); out = {}
-    for dev in f1.get(2, []):
+    f1_block = pb_read(top[1][0]); out = {}
+    for dev in f1_block.get(2, []):
         dd = pb_read(dev)
         if 1 not in dd: continue
-        devid = _dev_id(dd[1][0])
-        if devid is None: continue
+        cat, idx = _dev_id(dd[1][0])
+        if cat is None and idx is None: continue
+        # Resolve via id_map if available; fall back to generic zone key
+        if id_map and (cat, idx) in id_map:
+            devkey = id_map[(cat, idx)]
+        else:
+            devkey = f"z{idx}" if idx is not None else f"z{cat}_{idx}"
         body = pb_read(dd[2][0]) if 2 in dd else {}
-        out[devid] = _telem_from_block(body[3][0] if 3 in body else None, body.get(2, []))
+        telem = _telem_from_block(body[3][0] if 3 in body else None, body.get(2, []))
+        _LOGGER.debug("bewave telemetry devkey=%s cat=%s idx=%s state=%s", devkey, cat, idx, telem.get("state"))
+        out[devkey] = telem
     return out
 
+def _parse_device_entry(dd, rname, out):
+    """Parse a single device protobuf block (dd) into the out dict."""
+    if 1 not in dd:
+        return None
+    cat, idx = _dev_id(dd[1][0])
+    tel = {"type": None}
+    is_output = False
+    if 20 in dd:
+        t = pb_read(dd[20][0])
+        tel = _telem_from_block(t[3][0] if 3 in t else None, t.get(2, []))
+        if 3 in t:
+            f3b = pb_read(t[3][0])
+            is_output = bool(f3b.get(5, [0])[0])
+    sysnum = dd.get(21, [None])[0]
+    name = _s(dd.get(9, [b''])[0])
+    devkey = _dev_key(cat, idx, sysnum, is_output)
+    _LOGGER.debug("bewave config device key=%s name=%r room=%r f1=%s f2=%s sysnum=%s is_output=%s type=%s",
+                  devkey, name, rname, cat, idx, sysnum, is_output, tel.get("type"))
+    out[devkey] = {
+        "name": name, "room": rname,
+        "type": tel.get("type"), "is_output": is_output,
+        "model": DEV_MODELS.get(dd.get(2, [None])[0]),
+        "sysnum": sysnum, "bypass": bool(dd.get(22, [0])[0]),
+        "signal": tel.get("signal"), "battery": tel.get("battery"),
+        "state": tel.get("state"), "temp": tel.get("temp"),
+        "volt": tel.get("volt"),
+        "_f1": cat, "_f2": idx,  # kept so hub can rebuild id_map
+    }
+    return devkey
+
 def parse_config_devices(plaintext):
-    """f45 -> {devid: {name, room, type, is_output, model, sysnum, bypass, + telemetry}}."""
+    """f45 -> {devkey: {name, room, type, is_output, model, sysnum, bypass, + telemetry}}.
+    devkey is 'z{sysnum}' for zones, 'o{sysnum}' for outputs — globally unique."""
     d = pb_read(plaintext)
     if 45 not in d: return {}
     top = pb_read(d[45][0])
     if 1 not in top: return {}
     body = pb_read(top[1][0]); out = {}
+    # Log unknown top-level fields to help debug unseen structures
+    for fnum in body:
+        if fnum not in (1, 2, 3, 4, 5, 6):
+            _LOGGER.debug("bewave f45 body unknown field %d (len=%d)", fnum, len(body[fnum]))
     for room in body.get(4, []):
-        rd = pb_read(room); rname = _s(rd.get(2, [b''])[0])
+        rd = pb_read(room)
+        rname = _s(rd.get(2, [b''])[0])
+        devs_in_room = 0
         for dev in rd.get(5, []):
             dd = pb_read(dev)
-            if 1 not in dd: continue
-            devid = _dev_id(dd[1][0])
-            if devid is None: continue
-            tel = {"type": None}
-            is_output = False
-            if 20 in dd:
-                t = pb_read(dd[20][0])
-                tel = _telem_from_block(t[3][0] if 3 in t else None, t.get(2, []))
-                # f20.f3.f5 == 1 marks PGM/relay outputs; inputs have it absent
-                if 3 in t:
-                    f3b = pb_read(t[3][0])
-                    is_output = bool(f3b.get(5, [0])[0])
-            out[devid] = {"name": _s(dd.get(9, [b''])[0]), "room": rname,
-                          "type": tel.get("type"), "is_output": is_output,
-                          "model": DEV_MODELS.get(dd.get(2, [None])[0]),
-                          "sysnum": dd.get(21, [None])[0],
-                          "bypass": bool(dd.get(22, [0])[0]),
-                          "signal": tel.get("signal"), "battery": tel.get("battery"),
-                          "state": tel.get("state"), "temp": tel.get("temp"),
-                          "volt": tel.get("volt")}
+            if _parse_device_entry(dd, rname, out) is not None:
+                devs_in_room += 1
+        _LOGGER.debug("bewave f45 room=%r devices=%d", rname, devs_in_room)
+    # Also try alternate device lists that some firmware versions put at body.f6/f7
+    for alt_field in (6, 7):
+        for dev_block in body.get(alt_field, []):
+            dd = pb_read(dev_block)
+            if _parse_device_entry(dd, f"_f{alt_field}", out) is not None:
+                _LOGGER.debug("bewave f45 found device in alt field %d", alt_field)
+    _LOGGER.debug("bewave f45 total devices parsed: %d → %s", len(out), list(out.keys()))
     return out
 
 # ---------- framing ----------

@@ -34,8 +34,9 @@ class BeWaveHub:
         self.flags = {"led": None, "grade2": None, "satel": None}
         self.info = {"power": None, "stor_free": None, "stor_total": None,
                      "network": None, "firmware": None}
-        self.dev_names: dict[int, dict] = {}   # config: name/room/model/sysnum/bypass
-        self.dev_state: dict[int, dict] = {}   # live telemetry
+        self.dev_names: dict[str, dict] = {}   # config: name/room/model/sysnum/bypass
+        self.dev_state: dict[str, dict] = {}   # live telemetry
+        self._id_map: dict[tuple, str] = {}    # (f1,f2) -> devkey, for telemetry lookup
 
     def _ensure(self):
         if self.conn is not None:
@@ -136,19 +137,25 @@ class BeWaveHub:
             if net is not None:
                 self.info["network"] = net
             cfg = proto.parse_config_devices(pt)
-            for did, d in cfg.items():
-                self.dev_names[did] = {k: d[k] for k in ("name", "room", "type", "is_output", "model", "sysnum", "bypass")}
-                ds = self.dev_state.setdefault(did, {})
+            for devkey, d in cfg.items():
+                self.dev_names[devkey] = {k: d[k] for k in
+                    ("name", "room", "type", "is_output", "model", "sysnum", "bypass")}
+                # rebuild id_map so telemetry can resolve (f1,f2) -> devkey
+                f1, f2 = d.get("_f1"), d.get("_f2")
+                if f1 is not None or f2 is not None:
+                    self._id_map[(f1, f2)] = devkey
+                ds = self.dev_state.setdefault(devkey, {})
                 for k in ("signal", "battery", "state", "temp", "type", "volt"):
                     if d.get(k) is not None:
                         ds[k] = d[k]
-            for did, d in proto.parse_telemetry(pt).items():
-                self.dev_state.setdefault(did, {}).update({k: v for k, v in d.items() if v is not None})
+            for devkey, d in proto.parse_telemetry(pt, id_map=self._id_map).items():
+                self.dev_state.setdefault(devkey, {}).update(
+                    {k: v for k, v in d.items() if v is not None})
         # while armed, a currently-violated contact/motion zone means the alarm has
         # been tripped -> show the panel as "triggered" (sounding)
         if self.state == "armed_away":
-            for _did, _st in self.dev_state.items():
-                _typ = self.dev_names.get(_did, {}).get("type") or _st.get("type")
+            for _dkey, _st in self.dev_state.items():
+                _typ = self.dev_names.get(_dkey, {}).get("type") or _st.get("type")
                 if _st.get("state") == 1 and proto.DEV_TYPES.get(_typ) in ("contact", "motion"):
                     self.state = "triggered"
                     break
