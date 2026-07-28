@@ -10,6 +10,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DEFAULT_CONTROLLER_MODEL, DOMAIN
+from . import _is_default_partition
 
 _STATE_MAP = {
     "armed_away": AlarmControlPanelState.ARMED_AWAY,
@@ -32,10 +33,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     def _sync_partitions():
         new = []
         for mode_key, pdata in hub.partitions.items():
+            if _is_default_partition(mode_key, pdata, hub.mode):
+                continue
             if mode_key not in known_parts:
                 known_parts.add(mode_key)
                 new.append(BeWavePartitionPanel(
-                    coordinator, hub, entry, mode_key, pdata.get("name")))
+                    coordinator, hub, entry, mode_key,
+                    pdata.get("mode") or mode_key,
+                    pdata.get("id"),
+                    pdata.get("name")))
         if new:
             async_add_entities(new)
 
@@ -101,10 +107,13 @@ class BeWavePartitionPanel(CoordinatorEntity, AlarmControlPanelEntity):
     _attr_code_arm_required = False
     _attr_supported_features = AlarmControlPanelEntityFeature.ARM_AWAY
 
-    def __init__(self, coordinator, hub, entry: ConfigEntry, mode_key: str, name: str | None):
+    def __init__(self, coordinator, hub, entry: ConfigEntry, mode_key: str, mode: str,
+                 mode_id: int | None, name: str | None):
         super().__init__(coordinator)
         self._hub = hub
         self._mode_key = mode_key   # the mode string passed to arm/disarm command
+        self._mode_value = mode
+        self._mode_id = mode_id
         serial = entry.data.get("serial") or entry.entry_id
         self._attr_name = name or mode_key
         self._attr_unique_id = f"bewave_{serial}_mode_{mode_key}"
@@ -117,27 +126,29 @@ class BeWavePartitionPanel(CoordinatorEntity, AlarmControlPanelEntity):
 
     @property
     def alarm_state(self) -> AlarmControlPanelState | None:
-        # Until per-mode arm state is parsed from f89, fall back to global state.
-        # When hub.partition_states contains this mode's key, use it instead.
-        armed = self._hub.partition_states.get(self._mode_key)
-        if armed is None:
-            armed = self._hub.partition_states.get(None)
-        if armed is None:
-            st = self._hub.state
-            if st == "armed_away":   return AlarmControlPanelState.ARMED_AWAY
-            if st == "disarmed":     return AlarmControlPanelState.DISARMED
-            if st == "triggered":    return AlarmControlPanelState.TRIGGERED
-            return None
-        if armed and self._hub.state == "triggered":
+        # Use live active_modes from f45 user data when available.
+        active = getattr(self._hub, "active_modes", None)
+        if active is not None:
+            armed = self._mode_value in active
+        else:
+            # Fall back to partition_states dict until f45 is received.
+            armed = self._hub.partition_states.get(self._mode_key)
+            if armed is None and self._mode_id is not None:
+                armed = self._hub.partition_states.get(self._mode_id)
+            if armed is None:
+                return None
+        if not armed:
+            return AlarmControlPanelState.DISARMED
+        if self._hub.state == "triggered":
             return AlarmControlPanelState.TRIGGERED
-        return AlarmControlPanelState.ARMED_AWAY if armed else AlarmControlPanelState.DISARMED
+        return AlarmControlPanelState.ARMED_AWAY
 
     async def async_alarm_arm_away(self, code=None):
-        await self.hass.async_add_executor_job(self._hub.arm, self._mode_key)
+        await self.hass.async_add_executor_job(self._hub.arm, self._mode_value)
         await self.coordinator.async_request_refresh()
         self.async_write_ha_state()
 
     async def async_alarm_disarm(self, code=None):
-        await self.hass.async_add_executor_job(self._hub.disarm, self._mode_key)
+        await self.hass.async_add_executor_job(self._hub.disarm, self._mode_value)
         await self.coordinator.async_request_refresh()
         self.async_write_ha_state()

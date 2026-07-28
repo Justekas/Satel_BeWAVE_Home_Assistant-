@@ -15,7 +15,7 @@ except ImportError:  # older fallback
     from homeassistant.components.dhcp import DhcpServiceInfo  # type: ignore
 
 from .const import (DOMAIN, CONF_LOGIN, CONF_PASSWORD, CONF_HOST, CONF_SERIAL,
-                    CONF_DEVICE_UUID, CONF_MODE, DEFAULT_MODE)
+                    CONF_DEVICE_UUID, CONF_MODE, CONF_ARMING_MODES, DEFAULT_MODE)
 from . import bewave_client as proto
 
 
@@ -102,7 +102,12 @@ class BeWaveOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
-        current = self.entry.options.get(
+        current_mode = self.entry.options.get(
             CONF_MODE, self.entry.data.get(CONF_MODE, DEFAULT_MODE))
-        schema = vol.Schema({vol.Optional(CONF_MODE, default=current): str})
+        current_modes = self.entry.options.get(
+            CONF_ARMING_MODES, self.entry.data.get(CONF_ARMING_MODES, ""))
+        schema = vol.Schema({
+            vol.Optional(CONF_MODE, default=current_mode): str,
+            vol.Optional(CONF_ARMING_MODES, default=current_modes): str,
+        })
         return self.async_show_form(step_id="init", data_schema=schema)

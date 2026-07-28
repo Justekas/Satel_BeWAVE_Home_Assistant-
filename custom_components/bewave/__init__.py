@@ -11,11 +11,20 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (DOMAIN, CONF_LOGIN, CONF_PASSWORD, CONF_HOST, CONF_SERIAL,
-                    CONF_DEVICE_UUID, CONF_MODE, DEFAULT_MODE, SCAN_INTERVAL_SECONDS)
+                    CONF_DEVICE_UUID, CONF_MODE, CONF_ARMING_MODES, DEFAULT_MODE, SCAN_INTERVAL_SECONDS)
 from . import bewave_client as proto
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["alarm_control_panel", "switch", "binary_sensor", "sensor"]
+
+
+def _is_default_partition(mode_key: str, pdata: dict, default_mode: str) -> bool:
+    return (
+        mode_key == default_mode
+        or pdata.get("mode") == default_mode
+        or pdata.get("name") == default_mode
+        or pdata.get("name") == "default"
+    )
 
 
 class BeWaveHub:
@@ -38,8 +47,15 @@ class BeWaveHub:
         self.dev_names: dict[str, dict] = {}   # config: name/room/model/sysnum/bypass
         self.dev_state: dict[str, dict] = {}   # live telemetry
         self._id_map: dict[tuple, str] = {}    # (f1,f2) -> devkey, for telemetry lookup
-        self.partitions: dict[int, dict] = {}  # partition config: {id: {name}}
-        self.partition_states: dict[int | None, bool] = {}  # {part_id: is_armed}
+        self.partitions: dict[str, dict] = {}  # partition config: {mode_key: {name,id}}
+        self.partition_states: dict[str | int | None, bool] = {}  # {mode/id: is_armed}
+        self.active_modes: set[str] | None = None  # None = no f45 yet; set = known modes
+
+    def _sync_partition_state_keys(self):
+        for mode_key, pdata in self.partitions.items():
+            pid = pdata.get("id")
+            if pid in self.partition_states:
+                self.partition_states[mode_key] = self.partition_states[pid]
 
     def _ensure(self):
         # conn.sock being None means a previous connect_and_signin failed partway —
@@ -132,6 +148,7 @@ class BeWaveHub:
             part_states = proto.parse_armed_states(pt)
             if part_states:
                 self.partition_states.update(part_states)
+                self._sync_partition_state_keys()
                 # Global state: armed if any partition is armed
                 all_armed = [v for v in part_states.values() if v is not None]
                 if all_armed:
@@ -157,6 +174,13 @@ class BeWaveHub:
             parts = proto.parse_config_partitions(pt)
             if parts:
                 self.partitions.update(parts)
+                self._sync_partition_state_keys()
+            # Active modes from f45 user data (which mode each user has selected)
+            active = proto.parse_active_modes(pt)
+            if active is not None:
+                self.active_modes = active
+                for mode_key in self.partitions:
+                    self.partition_states[mode_key] = mode_key in self.active_modes
             cfg = proto.parse_config_devices(pt)
             for devkey, d in cfg.items():
                 self.dev_names[devkey] = {k: d[k] for k in
@@ -272,6 +296,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         serial=entry.data.get(CONF_SERIAL),
         mode=entry.options.get(CONF_MODE, entry.data.get(CONF_MODE, DEFAULT_MODE)),
     )
+    # Load user-configured arming modes (e.g. "am1,am2") into hub.partitions so
+    # alarm_control_panel can create per-mode panels immediately at setup.
+    _modes_str = entry.options.get(CONF_ARMING_MODES, entry.data.get(CONF_ARMING_MODES, ""))
+    for _m in (_x.strip() for _x in _modes_str.split(",") if _x.strip()):
+        hub.partitions.setdefault(_m, {"mode": _m, "name": _m, "id": None})
     entry.async_on_unload(entry.add_update_listener(_async_reload))
 
     async def _update():
@@ -289,8 +318,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     valid_ids: set = {(DOMAIN, serial)}
     for d in hub.devices():
         valid_ids.add((DOMAIN, f"{serial}_{d['id']}"))
-    for part_key in hub.partitions:
-        valid_ids.add((DOMAIN, f"{serial}_part_{part_key}"))
+    for part_key, pdata in hub.partitions.items():
+        if not _is_default_partition(part_key, pdata, hub.mode):
+            valid_ids.add((DOMAIN, f"{serial}_part_{part_key}"))
     dev_reg = dr.async_get(hass)
     for dev_entry in dr.async_entries_for_config_entry(dev_reg, entry.entry_id):
         if not dev_entry.identifiers.intersection(valid_ids):

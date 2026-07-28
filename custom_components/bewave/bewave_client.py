@@ -316,40 +316,92 @@ def devkey_num(devkey):
     'o5' → '5', 'z2' → '2', '5' → '5' (already numeric — no change)."""
     return str(devkey).lstrip("zo")
 
+def _log_block_strings(prefix, block, max_depth=1):
+    pb = pb_read(block)
+    _LOGGER.debug("%s fields=%s raw_vals=%s",
+                  prefix, sorted(pb.keys()),
+                  {k: (pb[k][0] if len(pb[k]) == 1 else pb[k]) for k in sorted(pb.keys())})
+    if max_depth <= 0:
+        return
+    for fnum in sorted(pb.keys()):
+        for bi, val in enumerate(pb[fnum]):
+            if not isinstance(val, (bytes, bytearray)):
+                continue
+            if _looks_str(val):
+                _LOGGER.debug("%s.f%d[%d]=%r", prefix, fnum, bi, _s(val))
+                continue
+            sub = pb_read(val)
+            if not sub:
+                continue
+            _LOGGER.debug("%s.f%d[%d] nested fields=%s", prefix, fnum, bi, sorted(sub.keys()))
+            for sfnum in sorted(sub.keys()):
+                for sbi, sval in enumerate(sub[sfnum]):
+                    if isinstance(sval, (bytes, bytearray)) and _looks_str(sval):
+                        _LOGGER.debug("%s.f%d[%d].f%d[%d]=%r",
+                                      prefix, fnum, bi, sfnum, sbi, _s(sval))
+            if max_depth > 1:
+                _log_block_strings(f"{prefix}.f{fnum}[{bi}]", val, max_depth=max_depth - 1)
+
+def parse_active_modes(plaintext):
+    """f45 -> set of currently armed custom mode keys (excludes DEFAULT_MODE='defau').
+
+    Reads f45.body.f3[N].f4[0].f2 (each user's current protection mode).
+    Returns None if f45 is not present in this message; returns empty set
+    when all users are in the default mode (system disarmed or globally armed)."""
+    DEFAULT = "defau"
+    d = pb_read(plaintext)
+    if 45 not in d:
+        return None
+    top = pb_read(d[45][0])
+    if 1 not in top:
+        return None
+    body = pb_read(top[1][0])
+    active: set[str] = set()
+    for user_block in body.get(3, []):
+        ub = pb_read(user_block)
+        if 4 not in ub:
+            continue
+        mode_block = pb_read(ub[4][0])
+        mode = _s(mode_block.get(2, [b""])[0])
+        if mode and mode != DEFAULT:
+            active.add(mode)
+            _LOGGER.debug("bewave f45 active mode: user=%r mode=%r",
+                          _s(ub.get(2, [b""])[0]), mode)
+    return active
+
 def parse_config_partitions(plaintext):
-    """f45 -> {mode_key: {name, mode}} — arming modes = virtual partitions.
-    In BE WAVE HYBRID, rooms are just display groupings; the arming MODES
-    (e.g. 'defau', 'perimeter', 'night') act as independent virtual partitions.
-    Modes are likely defined in f45 body field 2; rooms (f4) are NOT partitions.
-    Logs all candidate fields so we can identify the correct location."""
+    """f45 -> {mode_key: {name, mode, id}} for arming modes.
+
+    Rooms are display groupings only; arming modes are the virtual partitions
+    that can be armed/disarmed independently."""
     d = pb_read(plaintext)
     if 45 not in d: return {}
     top = pb_read(d[45][0])
     if 1 not in top: return {}
     body = pb_read(top[1][0])
     modes = {}
-    # Explore body.f1 — currently unused, might contain mode definitions
-    for i, block in enumerate(body.get(1, [])):
-        pb = pb_read(block)
-        _LOGGER.debug("bewave f45 body.f1[%d]: fields=%s", i, sorted(pb.keys()))
-        # Try to extract a mode name from any string-like field
-        for fnum in sorted(pb.keys()):
-            if pb[fnum] and isinstance(pb[fnum][0], bytes) and 2 <= len(pb[fnum][0]) <= 32:
-                _LOGGER.debug("  body.f1[%d].f%d = %r", i, fnum, _s(pb[fnum][0]))
-    # body.f2 — confirmed to have only {13: 111} (not modes), log for reference
+    _LOGGER.debug("bewave f45 body fields: %s", sorted(body.keys()))
+    # body.f2 appears to contain the mode definitions on HYBRID controllers.
+    for fnum in (1, 2, 3, 4, 5, 6, 7):
+        for i, block in enumerate(body.get(fnum, [])):
+            _log_block_strings(f"bewave f45 body.f{fnum}[{i}]", block, max_depth=1)
     for i, block in enumerate(body.get(2, [])):
         pb = pb_read(block)
-        _LOGGER.debug("bewave f45 body.f2[%d]: fields=%s raw_vals=%s",
-                      i, sorted(pb.keys()),
-                      {k: (pb[k][0] if len(pb[k]) == 1 else pb[k]) for k in sorted(pb.keys())})
-    # body.f3 = user accounts — scan for mode-like strings anyway
-    for i, block in enumerate(body.get(3, [])):
-        pb = pb_read(block)
-        _LOGGER.debug("bewave f45 body.f3[%d]: fields=%s", i, sorted(pb.keys()))
-        for fnum in sorted(pb.keys()):
-            if pb[fnum] and isinstance(pb[fnum][0], bytes) and 2 <= len(pb[fnum][0]) <= 32:
-                _LOGGER.debug("  body.f3[%d].f%d = %r", i, fnum, _s(pb[fnum][0]))
-    # Log any other top-level fields
+        mid = pb.get(1, [None])[0]
+        mname_raw = pb.get(9, pb.get(2, [b""]))[0]
+        mname = _s(mname_raw) if isinstance(mname_raw, (bytes, bytearray)) else None
+        if mname:
+            modes[mname] = {"name": mname, "mode": mname, "id": mid}
+        elif mid is not None:
+            key = str(mid)
+            modes[key] = {"name": key, "mode": key, "id": mid}
+    # Rooms are only display groupings; keep them in logs for reference.
+    for i, room in enumerate(body.get(4, [])):
+        rd = pb_read(room)
+        rname = _s(rd.get(2, [b""])[0])
+        _LOGGER.debug("bewave f45 room[%d]: id=%s name=%r devices=%d",
+                      i, rd.get(1, [None])[0], rname, len(rd.get(5, [])))
+    # Log any other top-level fields that might hide future controller variants.
     for fnum in sorted(body.keys()):
         if fnum not in (1, 2, 3, 4):
             _LOGGER.debug("bewave f45 body field %d: %d entries", fnum, len(body[fnum]))
@@ -374,8 +426,7 @@ def parse_armed_states(plaintext):
     for fnum in sorted(f1.keys()):
         if f1[fnum] and isinstance(f1[fnum][0], bytes):
             for bi, blk in enumerate(f1[fnum]):
-                pb = pb_read(blk)
-                _LOGGER.debug("bewave f89 f1.f%d[%d] fields=%s", fnum, bi, sorted(pb.keys()))
+                _log_block_strings(f"bewave f89 f1.f{fnum}[{bi}]", blk, max_depth=1)
     states = {}
     # Per-partition state blocks might be in f1.f3/f1.f4/f1.f5 etc.
     # Each block should have f1=partition_id and f20=arm_mode (0=off, 1/2=armed).
