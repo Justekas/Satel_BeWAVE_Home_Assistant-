@@ -84,6 +84,7 @@ class BeWaveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Required(CONF_LOGIN): str,
             vol.Required(CONF_PASSWORD): str,
             vol.Optional(CONF_MODE, default=DEFAULT_MODE): str,
+            vol.Optional(CONF_ARMING_MODES, default=""): str,
             vol.Optional(CONF_SERIAL): str,
             vol.Optional(CONF_DEVICE_UUID): str,
         })
